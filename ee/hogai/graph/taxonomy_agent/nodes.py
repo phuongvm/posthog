@@ -1,9 +1,8 @@
 import xml.etree.ElementTree as ET
 from abc import ABC
 from functools import cached_property
-from typing import cast
+from typing import cast, Optional
 
-from git import Optional
 from langchain.agents.format_scratchpad import format_log_to_str
 from langchain_core.agents import AgentAction
 from langchain_core.messages import (

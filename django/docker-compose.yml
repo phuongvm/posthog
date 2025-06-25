@@ -1,0 +1,210 @@
+services:
+  # Main Django services using unified image
+  web:
+    build:
+      context: ..
+      dockerfile: django/Dockerfile
+      target: runtime
+    container_name: posthog-web
+    restart: on-failure
+    command: ./bin/start-backend & ./bin/start-frontend
+    environment:
+      # Django environment
+      OTEL_SDK_DISABLED: 'true'
+      DISABLE_SECURE_SSL_REDIRECT: 'true'
+      IS_BEHIND_PROXY: 'true'
+      
+      # Database connections
+      DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'
+      CLICKHOUSE_HOST: 'clickhouse'
+      CLICKHOUSE_DATABASE: 'posthog'
+      CLICKHOUSE_SECURE: 'false'
+      CLICKHOUSE_VERIFY: 'false'
+      CLICKHOUSE_API_USER: 'api'
+      CLICKHOUSE_API_PASSWORD: 'apipass'
+      CLICKHOUSE_APP_USER: 'app'
+      CLICKHOUSE_APP_PASSWORD: 'apppass'
+      
+      # API and limits
+      API_QUERIES_PER_TEAM: '{"1": 100}'
+      
+      # Message brokers
+      KAFKA_HOSTS: 'kafka:9092'
+      REDIS_URL: 'redis://redis:6379/'
+      
+      # PostgreSQL connection
+      PGHOST: db
+      PGUSER: posthog
+      PGPASSWORD: posthog
+      
+      # Deployment settings
+      DEPLOYMENT: hobby
+      CDP_API_URL: 'http://plugins:6738'
+      
+      # Development settings
+      DEBUG: '1'
+      DJANGO_SETTINGS_MODULE: 'posthog.settings'
+      
+    volumes:
+      # Mount source code for development
+      - ..:/code
+      - ../share:/code/share:ro
+    
+  worker:
+    build:
+      context: ..
+      dockerfile: django/Dockerfile
+      target: runtime
+    container_name: posthog-worker
+    restart: on-failure
+    command: ./bin/docker-worker-celery --with-scheduler
+    environment:
+      # Same environment as web
+      OTEL_SDK_DISABLED: 'true'
+      DISABLE_SECURE_SSL_REDIRECT: 'true'
+      IS_BEHIND_PROXY: 'true'
+      DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'
+      CLICKHOUSE_HOST: 'clickhouse'
+      CLICKHOUSE_DATABASE: 'posthog'
+      CLICKHOUSE_SECURE: 'false'
+      CLICKHOUSE_VERIFY: 'false'
+      CLICKHOUSE_API_USER: 'api'
+      CLICKHOUSE_API_PASSWORD: 'apipass'
+      CLICKHOUSE_APP_USER: 'app'
+      CLICKHOUSE_APP_PASSWORD: 'apppass'
+      API_QUERIES_PER_TEAM: '{"1": 100}'
+      KAFKA_HOSTS: 'kafka:9092'
+      REDIS_URL: 'redis://redis:6379/'
+      PGHOST: db
+      PGUSER: posthog
+      PGPASSWORD: posthog
+      DEPLOYMENT: hobby
+      CDP_API_URL: 'http://plugins:6738'
+      DEBUG: '1'
+      DJANGO_SETTINGS_MODULE: 'posthog.settings'
+      
+    volumes:
+      - ..:/code
+      - ../share:/code/share:ro
+      
+  migrate:
+    build:
+      context: ..
+      dockerfile: django/Dockerfile
+      target: runtime
+    container_name: posthog-migrate
+    restart: 'no'
+    command: sh -c "
+      python manage.py migrate
+      && python manage.py migrate_clickhouse
+      && python manage.py run_async_migrations
+      "
+    environment:
+      # Same environment as web
+      OTEL_SDK_DISABLED: 'true'
+      DISABLE_SECURE_SSL_REDIRECT: 'true'
+      IS_BEHIND_PROXY: 'true'
+      DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'
+      CLICKHOUSE_HOST: 'clickhouse'
+      CLICKHOUSE_DATABASE: 'posthog'
+      CLICKHOUSE_SECURE: 'false'
+      CLICKHOUSE_VERIFY: 'false'
+      CLICKHOUSE_API_USER: 'api'
+      CLICKHOUSE_API_PASSWORD: 'apipass'
+      CLICKHOUSE_APP_USER: 'app'
+      CLICKHOUSE_APP_PASSWORD: 'apppass'
+      API_QUERIES_PER_TEAM: '{"1": 100}'
+      KAFKA_HOSTS: 'kafka:9092'
+      REDIS_URL: 'redis://redis:6379/'
+      PGHOST: db
+      PGUSER: posthog
+      PGPASSWORD: posthog
+      DEPLOYMENT: hobby
+      CDP_API_URL: 'http://plugins:6738'
+      DEBUG: '1'
+      DJANGO_SETTINGS_MODULE: 'posthog.settings'
+      
+    volumes:
+      - ..:/code
+      - ../share:/code/share:ro
+      
+  asyncmigrationscheck:
+    build:
+      context: ..
+      dockerfile: django/Dockerfile
+      target: runtime
+    container_name: posthog-asyncmigrationscheck
+    restart: 'no'
+    command: python manage.py run_async_migrations --check
+    environment:
+      # Same environment as web + async migrations
+      OTEL_SDK_DISABLED: 'true'
+      DISABLE_SECURE_SSL_REDIRECT: 'true'
+      IS_BEHIND_PROXY: 'true'
+      DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'
+      CLICKHOUSE_HOST: 'clickhouse'
+      CLICKHOUSE_DATABASE: 'posthog'
+      CLICKHOUSE_SECURE: 'false'
+      CLICKHOUSE_VERIFY: 'false'
+      CLICKHOUSE_API_USER: 'api'
+      CLICKHOUSE_API_PASSWORD: 'apipass'
+      CLICKHOUSE_APP_USER: 'app'
+      CLICKHOUSE_APP_PASSWORD: 'apppass'
+      API_QUERIES_PER_TEAM: '{"1": 100}'
+      KAFKA_HOSTS: 'kafka:9092'
+      REDIS_URL: 'redis://redis:6379/'
+      PGHOST: db
+      PGUSER: posthog
+      PGPASSWORD: posthog
+      DEPLOYMENT: hobby
+      CDP_API_URL: 'http://plugins:6738'
+      DEBUG: '1'
+      DJANGO_SETTINGS_MODULE: 'posthog.settings'
+      SKIP_ASYNC_MIGRATIONS_SETUP: 0
+      
+    volumes:
+      - ..:/code
+      - ../share:/code/share:ro
+      
+  temporal-django-worker:
+    build:
+      context: ..
+      dockerfile: django/Dockerfile
+      target: runtime
+    container_name: posthog-temporal-django-worker
+    restart: on-failure
+    command: ./bin/temporal-django-worker
+    environment:
+      # Same environment as web + temporal
+      OTEL_SDK_DISABLED: 'true'
+      DISABLE_SECURE_SSL_REDIRECT: 'true'
+      IS_BEHIND_PROXY: 'true'
+      DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'
+      CLICKHOUSE_HOST: 'clickhouse'
+      CLICKHOUSE_DATABASE: 'posthog'
+      CLICKHOUSE_SECURE: 'false'
+      CLICKHOUSE_VERIFY: 'false'
+      CLICKHOUSE_API_USER: 'api'
+      CLICKHOUSE_API_PASSWORD: 'apipass'
+      CLICKHOUSE_APP_USER: 'app'
+      CLICKHOUSE_APP_PASSWORD: 'apppass'
+      API_QUERIES_PER_TEAM: '{"1": 100}'
+      KAFKA_HOSTS: 'kafka:9092'
+      REDIS_URL: 'redis://redis:6379/'
+      PGHOST: db
+      PGUSER: posthog
+      PGPASSWORD: posthog
+      DEPLOYMENT: hobby
+      CDP_API_URL: 'http://plugins:6738'
+      DEBUG: '1'
+      DJANGO_SETTINGS_MODULE: 'posthog.settings'
+      TEMPORAL_HOST: temporal
+      
+    volumes:
+      - ..:/code
+      - ../share:/code/share:ro
+      
+networks:
+  default:
+    external: true
+    name: posthog_default 

@@ -15,6 +15,8 @@ export NGINX_UNIT_PYTHON_PROTOCOL=${NGINX_UNIT_PYTHON_PROTOCOL:-wsgi}
 export NGINX_UNIT_APP_PROCESSES=${NGINX_UNIT_APP_PROCESSES:-4}
 envsubst < /docker-entrypoint.d/unit.json.tpl > /docker-entrypoint.d/unit.json
 
+# Load Unit configuration immediately after creation
+sleep 2 && curl -X PUT --data-binary @/docker-entrypoint.d/unit.json --unix-socket /var/run/control.unit.sock http://localhost/config/ || true
 
 # We need to run as --user root so that nginx unit can proxy the control socket for stats
 # However each application is run as "nobody"

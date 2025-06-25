@@ -251,6 +251,8 @@ services:
     plugins:
         command: ./bin/plugin-server --no-restart-loop
         restart: on-failure
+        volumes:
+            - ./share:/share
         environment:
             DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'
             PERSONS_DATABASE_URL: 'postgres://posthog:posthog@db:5432/posthog'

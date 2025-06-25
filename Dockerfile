@@ -4,7 +4,7 @@
 # PostHog has sunset support for self-hosted K8s deployments.
 # See: https://posthog.com/blog/sunsetting-helm-support-posthog
 #
-# Note: for PostHog Cloud remember to update ‘Dockerfile.cloud’ as appropriate.
+# Note: for PostHog Cloud remember to update 'Dockerfile.cloud' as appropriate.
 #
 # The stages are used to:
 #
@@ -126,7 +126,7 @@ RUN apt-get update && \
     && \
     rm -rf /var/lib/apt/lists/* && \
     pip install uv~=0.7.0 --no-cache-dir && \
-    UV_PROJECT_ENVIRONMENT=/python-runtime uv sync --frozen --no-dev --no-cache --compile-bytecode --no-binary-package lxml --no-binary-package xmlsec
+    UV_PROJECT_ENVIRONMENT=/python-runtime uv sync --frozen --no-cache --compile-bytecode --no-binary-package lxml --no-binary-package xmlsec
 
 ENV PATH=/python-runtime/bin:$PATH \
     PYTHONPATH=/python-runtime
@@ -199,6 +199,9 @@ RUN apt-get install -y --no-install-recommends \
     && \
     rm -rf /var/lib/apt/lists/*
 
+# Install pnpm for plugin-server runtime
+RUN npm install -g pnpm
+
 # Install and use a non-root user.
 RUN groupadd -g 1000 posthog && \
     useradd -r -g posthog posthog && \
@@ -239,10 +242,12 @@ COPY --from=fetch-geoip-db --chown=posthog:posthog /code/share/GeoLite2-City.mmd
 # Add in the Gunicorn config, custom bin files and Django deps.
 COPY --chown=posthog:posthog gunicorn.config.py ./
 COPY --chown=posthog:posthog ./bin ./bin/
+COPY --chown=posthog:posthog pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY --chown=posthog:posthog manage.py manage.py
 COPY --chown=posthog:posthog posthog posthog/
 COPY --chown=posthog:posthog ee ee/
 COPY --chown=posthog:posthog common/hogvm common/hogvm/
+COPY --chown=posthog:posthog common/esbuilder common/esbuilder/
 COPY --chown=posthog:posthog dags dags/
 COPY --chown=posthog:posthog products products/
 
@@ -262,4 +267,5 @@ EXPOSE 8000
 EXPOSE 8001
 COPY unit.json.tpl /docker-entrypoint.d/unit.json.tpl
 USER root
+RUN chmod +x /docker-entrypoint.d/unit.json.tpl
 CMD ["./bin/docker"]

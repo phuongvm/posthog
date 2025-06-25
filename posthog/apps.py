@@ -75,4 +75,11 @@ class PostHogConfig(AppConfig):
 
         # Skip during tests since we handle this in conftest.py
         if not settings.TEST:
-            queue_sync_hog_function_templates()
+            # Only queue if Redis is available (skip during build/startup)
+            try:
+                from posthog.redis import get_client
+                r = get_client()
+                r.ping()  # Test Redis connection
+                queue_sync_hog_function_templates()
+            except Exception as e:
+                logger.warning("Skipping hog function templates sync - Redis not available", error=str(e))
