@@ -13,7 +13,9 @@ mod tests {
             flag_group_type_mapping::GroupTypeMappingCache,
             flag_match_reason::FeatureFlagMatchReason,
             flag_matching::{FeatureFlagMatch, FeatureFlagMatcher},
-            flag_matching_utils::set_feature_flag_hash_key_overrides,
+            flag_matching_utils::{
+                get_fetch_calls_count, reset_fetch_calls_count, set_feature_flag_hash_key_overrides,
+            },
             flag_models::{
                 FeatureFlag, FeatureFlagList, FlagFilters, FlagPropertyGroup,
                 MultivariateFlagOptions, MultivariateFlagVariant,
@@ -89,7 +91,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -110,7 +112,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -131,7 +133,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -194,7 +196,7 @@ mod tests {
             flags: vec![flag.clone()],
         };
         let result = matcher
-            .evaluate_all_feature_flags(flags, Some(overrides), None, None, Uuid::new_v4())
+            .evaluate_all_feature_flags(flags, Some(overrides), None, None, Uuid::new_v4(), None)
             .await;
         assert!(!result.errors_while_computing_flags);
         assert_eq!(
@@ -271,7 +273,14 @@ mod tests {
             flags: vec![flag.clone()],
         };
         let result = matcher
-            .evaluate_all_feature_flags(flags, None, Some(group_overrides), None, Uuid::new_v4())
+            .evaluate_all_feature_flags(
+                flags,
+                None,
+                Some(group_overrides),
+                None,
+                Uuid::new_v4(),
+                None,
+            )
             .await;
 
         let legacy_response = LegacyFlagsResponse::from_response(result);
@@ -280,6 +289,710 @@ mod tests {
             legacy_response.feature_flags.get("test_flag"),
             Some(&FlagValue::Boolean(true))
         );
+    }
+
+    // Use the shared test utility functions from test_utils.rs
+    use crate::utils::test_utils::{
+        create_test_flag_that_depends_on_flag, create_test_flag_with_properties,
+        create_test_flag_with_property,
+    };
+
+    #[tokio::test]
+    async fn test_flags_that_depends_on_other_boolean_flag() {
+        let reader = setup_pg_reader_client(None).await;
+        let writer = setup_pg_writer_client(None).await;
+        let cohort_cache = Arc::new(CohortCacheManager::new(reader.clone(), None, None));
+        let team = insert_new_team_in_pg(reader.clone(), None).await.unwrap();
+
+        let leaf_flag = create_test_flag_with_property(
+            23,
+            team.id,
+            "leaf_flag",
+            PropertyFilter {
+                key: "email".to_string(),
+                value: Some(json!("override@example.com")),
+                operator: Some(OperatorType::Exact),
+                prop_type: PropertyType::Person,
+                group_type_index: None,
+                negation: None,
+            },
+        );
+        let independent_flag = create_test_flag_with_property(
+            99,
+            team.id,
+            "independent_flag",
+            PropertyFilter {
+                key: "email".to_string(),
+                value: Some(json!("override@example.com")),
+                operator: Some(OperatorType::Exact),
+                prop_type: PropertyType::Person,
+                group_type_index: None,
+                negation: None,
+            },
+        );
+        let parent_flag = create_test_flag_that_depends_on_flag(
+            42,
+            team.id,
+            "parent_flag",
+            leaf_flag.id,
+            FlagValue::Boolean(true),
+        );
+
+        let mut matcher = FeatureFlagMatcher::new(
+            "test_user".to_string(),
+            team.id,
+            team.project_id,
+            reader,
+            writer,
+            cohort_cache,
+            None,
+            None,
+        );
+
+        let flags = FeatureFlagList {
+            flags: vec![
+                independent_flag.clone(),
+                leaf_flag.clone(),
+                parent_flag.clone(),
+            ],
+        };
+
+        {
+            let overrides = HashMap::from([("email".to_string(), json!("override@example.com"))]);
+            let result = matcher
+                .evaluate_all_feature_flags(
+                    flags.clone(),
+                    Some(overrides),
+                    None,
+                    None,
+                    Uuid::new_v4(),
+                    None,
+                )
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("independent_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+            assert!(!result.flags.contains_key("cycle_start_flag"));
+            assert!(!result.flags.contains_key("cycle_middle_flag"));
+            assert!(!result.flags.contains_key("cycle_node"));
+            assert!(!result.flags.contains_key("missing_dependency_flag"));
+        }
+        {
+            // Leaf flag evaluates to false
+            let result = matcher
+                .evaluate_all_feature_flags(flags.clone(), None, None, None, Uuid::new_v4(), None)
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("independent_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+            assert!(!result.flags.contains_key("cycle_start_flag"));
+            assert!(!result.flags.contains_key("cycle_middle_flag"));
+            assert!(!result.flags.contains_key("cycle_node"));
+            assert!(!result.flags.contains_key("missing_dependency_flag"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flags_that_depends_on_other_multivariate_flag_variant_match() {
+        let reader = setup_pg_reader_client(None).await;
+        let writer = setup_pg_writer_client(None).await;
+        let cohort_cache = Arc::new(CohortCacheManager::new(reader.clone(), None, None));
+        let team = insert_new_team_in_pg(reader.clone(), None).await.unwrap();
+
+        let leaf_flag = create_test_flag(
+            Some(2),
+            Some(team.id),
+            None,
+            Some("leaf_flag".to_string()),
+            Some(FlagFilters {
+                groups: vec![
+                    FlagPropertyGroup {
+                        properties: Some(vec![PropertyFilter {
+                            key: "email".to_string(),
+                            value: Some(json!("control@example.com")),
+                            operator: Some(OperatorType::Exact),
+                            prop_type: PropertyType::Person,
+                            group_type_index: None,
+                            negation: None,
+                        }]),
+                        rollout_percentage: Some(100.0),
+                        variant: Some("control".to_string()),
+                    },
+                    FlagPropertyGroup {
+                        properties: Some(vec![PropertyFilter {
+                            key: "email".to_string(),
+                            value: Some(json!("test@example.com")),
+                            operator: Some(OperatorType::Exact),
+                            prop_type: PropertyType::Person,
+                            group_type_index: None,
+                            negation: None,
+                        }]),
+                        rollout_percentage: Some(100.0),
+                        variant: Some("test".to_string()),
+                    },
+                    FlagPropertyGroup {
+                        properties: Some(vec![]),
+                        rollout_percentage: Some(100.0),
+                        variant: Some("other".to_string()),
+                    },
+                ],
+                multivariate: Some(MultivariateFlagOptions {
+                    variants: vec![
+                        MultivariateFlagVariant {
+                            name: None,
+                            key: "control".to_string(),
+                            rollout_percentage: 50.0,
+                        },
+                        MultivariateFlagVariant {
+                            name: None,
+                            key: "test".to_string(),
+                            rollout_percentage: 50.0,
+                        },
+                        MultivariateFlagVariant {
+                            name: None,
+                            key: "other".to_string(),
+                            rollout_percentage: 50.0,
+                        },
+                    ],
+                }),
+                aggregation_group_type_index: None,
+                payloads: None,
+                super_groups: None,
+                holdout_groups: None,
+            }),
+            None,
+            None,
+            None,
+        );
+
+        let parent_flag = create_test_flag_that_depends_on_flag(
+            1,
+            team.id,
+            "parent_flag",
+            leaf_flag.id,
+            FlagValue::String("control".to_string()),
+        );
+
+        let mut matcher = FeatureFlagMatcher::new(
+            "test_user".to_string(),
+            team.id,
+            team.project_id,
+            reader,
+            writer,
+            cohort_cache,
+            None,
+            None,
+        );
+        let flags = FeatureFlagList {
+            flags: vec![leaf_flag.clone(), parent_flag.clone()],
+        };
+
+        {
+            let overrides = HashMap::from([("email".to_string(), json!("control@example.com"))]);
+            let result = matcher
+                .evaluate_all_feature_flags(
+                    flags.clone(),
+                    Some(overrides),
+                    None,
+                    None,
+                    Uuid::new_v4(),
+                    None,
+                )
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::String("control".to_string())
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+        }
+        {
+            let overrides = HashMap::from([("email".to_string(), json!("test@example.com"))]);
+            let result = matcher
+                .evaluate_all_feature_flags(
+                    flags.clone(),
+                    Some(overrides),
+                    None,
+                    None,
+                    Uuid::new_v4(),
+                    None,
+                )
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::String("test".to_string())
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+        }
+        {
+            let overrides = HashMap::from([("email".to_string(), json!("random@example.com"))]);
+            let result = matcher
+                .evaluate_all_feature_flags(
+                    flags.clone(),
+                    Some(overrides),
+                    None,
+                    None,
+                    Uuid::new_v4(),
+                    None,
+                )
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::String("other".to_string())
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flags_with_deep_dependency_tree_only_calls_db_once_total() {
+        let reader = setup_pg_reader_client(None).await;
+        let writer = setup_pg_writer_client(None).await;
+        let cohort_cache = Arc::new(CohortCacheManager::new(reader.clone(), None, None));
+        let team = insert_new_team_in_pg(reader.clone(), None).await.unwrap();
+        let _person_id = insert_person_for_team_in_pg(
+            reader.clone(),
+            team.id,
+            "test_user_distinct_id".to_string(),
+            Some(json!({ "email": "email-in-db@example.com", "is-cool": true })),
+        )
+        .await
+        .unwrap();
+
+        let leaf_flag = create_test_flag_with_property(
+            23,
+            team.id,
+            "leaf_flag",
+            PropertyFilter {
+                key: "is-cool".to_string(),
+                value: Some(json!(true)),
+                operator: Some(OperatorType::Exact),
+                prop_type: PropertyType::Person,
+                group_type_index: None,
+                negation: None,
+            },
+        );
+        let independent_flag = create_test_flag_with_property(
+            99,
+            team.id,
+            "independent_flag",
+            PropertyFilter {
+                key: "email".to_string(),
+                value: Some(json!("email-not-in-db@example.com")),
+                operator: Some(OperatorType::Exact),
+                prop_type: PropertyType::Person,
+                group_type_index: None,
+                negation: None,
+            },
+        );
+        let intermediate_flag = create_test_flag_with_properties(
+            43,
+            team.id,
+            "intermediate_flag",
+            vec![
+                PropertyFilter {
+                    key: "email".to_string(),
+                    value: Some(json!("email-in-db@example.com")),
+                    operator: Some(OperatorType::Exact),
+                    prop_type: PropertyType::Person,
+                    group_type_index: None,
+                    negation: None,
+                },
+                PropertyFilter {
+                    key: leaf_flag.id.to_string(),
+                    value: Some(json!(true)),
+                    operator: Some(OperatorType::Exact),
+                    prop_type: PropertyType::Flag,
+                    group_type_index: None,
+                    negation: None,
+                },
+            ],
+        );
+        let parent_flag = create_test_flag_that_depends_on_flag(
+            42,
+            team.id,
+            "parent_flag",
+            intermediate_flag.id,
+            FlagValue::Boolean(true),
+        );
+
+        let mut matcher = FeatureFlagMatcher::new(
+            "test_user_distinct_id".to_string(),
+            team.id,
+            team.project_id,
+            reader,
+            writer,
+            cohort_cache,
+            None,
+            None,
+        );
+
+        let flags = FeatureFlagList {
+            flags: vec![
+                independent_flag.clone(),
+                leaf_flag.clone(),
+                intermediate_flag.clone(),
+                parent_flag.clone(),
+            ],
+        };
+
+        reset_fetch_calls_count();
+
+        let result = matcher
+            .evaluate_all_feature_flags(flags.clone(), None, None, None, Uuid::new_v4(), None)
+            .await;
+        // Add this assertion to check the call count
+        let fetch_calls = get_fetch_calls_count();
+        assert_eq!(fetch_calls, 1, "Expected fetch_and_locally_cache_all_relevant_properties to be called exactly 1 time, but it was called {} times", fetch_calls);
+        assert_eq!(
+            result.flags.get("leaf_flag").unwrap().to_value(),
+            FlagValue::Boolean(true)
+        );
+        assert_eq!(
+            result.flags.get("independent_flag").unwrap().to_value(),
+            FlagValue::Boolean(false)
+        );
+        assert_eq!(
+            result.flags.get("intermediate_flag").unwrap().to_value(),
+            FlagValue::Boolean(true)
+        );
+        assert_eq!(
+            result.flags.get("parent_flag").unwrap().to_value(),
+            FlagValue::Boolean(true)
+        );
+        assert!(!result.errors_while_computing_flags);
+    }
+
+    #[tokio::test]
+    async fn test_flags_with_dependency_cycle_and_missing_dependency_still_evaluates_independent_flags(
+    ) {
+        let reader = setup_pg_reader_client(None).await;
+        let writer = setup_pg_writer_client(None).await;
+        let cohort_cache = Arc::new(CohortCacheManager::new(reader.clone(), None, None));
+        let team = insert_new_team_in_pg(reader.clone(), None).await.unwrap();
+
+        let leaf_flag = create_test_flag_with_property(
+            23,
+            team.id,
+            "leaf_flag",
+            PropertyFilter {
+                key: "email".to_string(),
+                value: Some(json!("override@example.com")),
+                operator: Some(OperatorType::Exact),
+                prop_type: PropertyType::Person,
+                group_type_index: None,
+                negation: None,
+            },
+        );
+        let independent_flag = create_test_flag_with_property(
+            99,
+            team.id,
+            "independent_flag",
+            PropertyFilter {
+                key: "email".to_string(),
+                value: Some(json!("override@example.com")),
+                operator: Some(OperatorType::Exact),
+                prop_type: PropertyType::Person,
+                group_type_index: None,
+                negation: None,
+            },
+        );
+        let parent_flag = create_test_flag_that_depends_on_flag(
+            42,
+            team.id,
+            "parent_flag",
+            leaf_flag.id,
+            FlagValue::Boolean(true),
+        );
+
+        let cycle_node = create_test_flag_that_depends_on_flag(
+            43,
+            team.id,
+            "self_referencing_flag",
+            44,
+            FlagValue::Boolean(true),
+        );
+
+        let cycle_middle_flag = create_test_flag_that_depends_on_flag(
+            44,
+            team.id,
+            "cycle_middle_flag",
+            45,
+            FlagValue::Boolean(true),
+        );
+
+        let cycle_start_flag = create_test_flag_that_depends_on_flag(
+            45,
+            team.id,
+            "cycle_start_flag",
+            43,
+            FlagValue::Boolean(true),
+        );
+
+        let missing_dependency_flag = create_test_flag_that_depends_on_flag(
+            46,
+            team.id,
+            "missing_dependency_flag",
+            999,
+            FlagValue::Boolean(true),
+        );
+
+        let mut matcher = FeatureFlagMatcher::new(
+            "test_user".to_string(),
+            team.id,
+            team.project_id,
+            reader,
+            writer,
+            cohort_cache,
+            None,
+            None,
+        );
+
+        let flags = FeatureFlagList {
+            flags: vec![
+                independent_flag.clone(),
+                leaf_flag.clone(),
+                cycle_node.clone(),
+                cycle_middle_flag.clone(),
+                cycle_start_flag.clone(),
+                parent_flag.clone(),
+                missing_dependency_flag.clone(),
+            ],
+        };
+
+        {
+            // Leaf flag evaluates to true
+            let overrides = HashMap::from([("email".to_string(), json!("override@example.com"))]);
+            let result = matcher
+                .evaluate_all_feature_flags(
+                    flags.clone(),
+                    Some(overrides),
+                    None,
+                    None,
+                    Uuid::new_v4(),
+                    None,
+                )
+                .await;
+            assert!(result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("independent_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+            assert!(!result.flags.contains_key("cycle_start_flag"));
+            assert!(!result.flags.contains_key("cycle_middle_flag"));
+            assert!(!result.flags.contains_key("cycle_node"));
+            assert!(!result.flags.contains_key("missing_dependency_flag"));
+        }
+        {
+            // Leaf flag evaluates to false
+            let result = matcher
+                .evaluate_all_feature_flags(flags.clone(), None, None, None, Uuid::new_v4(), None)
+                .await;
+            assert!(result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("independent_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+            assert!(!result.flags.contains_key("cycle_start_flag"));
+            assert!(!result.flags.contains_key("cycle_middle_flag"));
+            assert!(!result.flags.contains_key("cycle_node"));
+            assert!(!result.flags.contains_key("missing_dependency_flag"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flags_that_depends_on_other_multivariate_flag_boolean_match() {
+        let reader = setup_pg_reader_client(None).await;
+        let writer = setup_pg_writer_client(None).await;
+        let cohort_cache = Arc::new(CohortCacheManager::new(reader.clone(), None, None));
+        let team = insert_new_team_in_pg(reader.clone(), None).await.unwrap();
+
+        let leaf_flag = create_test_flag(
+            Some(3),
+            Some(team.id),
+            None,
+            Some("leaf_flag".to_string()),
+            Some(FlagFilters {
+                groups: vec![
+                    FlagPropertyGroup {
+                        properties: Some(vec![PropertyFilter {
+                            key: "email".to_string(),
+                            value: Some(json!("control@example.com")),
+                            operator: Some(OperatorType::Exact),
+                            prop_type: PropertyType::Person,
+                            group_type_index: None,
+                            negation: None,
+                        }]),
+                        rollout_percentage: Some(100.0),
+                        variant: Some("control".to_string()),
+                    },
+                    FlagPropertyGroup {
+                        properties: Some(vec![PropertyFilter {
+                            key: "email".to_string(),
+                            value: Some(json!("test@example.com")),
+                            operator: Some(OperatorType::Exact),
+                            prop_type: PropertyType::Person,
+                            group_type_index: None,
+                            negation: None,
+                        }]),
+                        rollout_percentage: Some(100.0),
+                        variant: Some("test".to_string()),
+                    },
+                ],
+                multivariate: Some(MultivariateFlagOptions {
+                    variants: vec![
+                        MultivariateFlagVariant {
+                            name: None,
+                            key: "control".to_string(),
+                            rollout_percentage: 50.0,
+                        },
+                        MultivariateFlagVariant {
+                            name: None,
+                            key: "test".to_string(),
+                            rollout_percentage: 50.0,
+                        },
+                    ],
+                }),
+                aggregation_group_type_index: None,
+                payloads: None,
+                super_groups: None,
+                holdout_groups: None,
+            }),
+            None,
+            None,
+            None,
+        );
+
+        let parent_flag = create_test_flag_that_depends_on_flag(
+            2,
+            team.id,
+            "parent_flag",
+            leaf_flag.id,
+            FlagValue::Boolean(true), // KEY DIFFERENCE FROM PREVIOUS TEST
+        );
+
+        let mut matcher = FeatureFlagMatcher::new(
+            "test_user".to_string(),
+            team.id,
+            team.project_id,
+            reader,
+            writer,
+            cohort_cache,
+            None,
+            None,
+        );
+        let flags = FeatureFlagList {
+            flags: vec![leaf_flag.clone(), parent_flag.clone()],
+        };
+
+        {
+            // Leaf flag evaluates to "control"
+            let overrides = HashMap::from([("email".to_string(), json!("control@example.com"))]);
+            let result = matcher
+                .evaluate_all_feature_flags(
+                    flags.clone(),
+                    Some(overrides),
+                    None,
+                    None,
+                    Uuid::new_v4(),
+                    None,
+                )
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::String("control".to_string())
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+        }
+        {
+            // Leaf flag evaluates to "test"
+            let overrides = HashMap::from([("email".to_string(), json!("test@example.com"))]);
+            let result = matcher
+                .evaluate_all_feature_flags(
+                    flags.clone(),
+                    Some(overrides),
+                    None,
+                    None,
+                    Uuid::new_v4(),
+                    None,
+                )
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::String("test".to_string())
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(true)
+            );
+        }
+        {
+            // Leaf flag evaluates to false
+            let result = matcher
+                .evaluate_all_feature_flags(flags.clone(), None, None, None, Uuid::new_v4(), None)
+                .await;
+            assert!(!result.errors_while_computing_flags);
+            assert_eq!(
+                result.flags.get("leaf_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+            assert_eq!(
+                result.flags.get("parent_flag").unwrap().to_value(),
+                FlagValue::Boolean(false)
+            );
+        }
     }
 
     #[tokio::test]
@@ -489,7 +1202,7 @@ mod tests {
             },
             deleted: false,
             active: true,
-            ensure_experience_continuity: false,
+            ensure_experience_continuity: Some(false),
             version: Some(1),
         }
     }
@@ -544,6 +1257,7 @@ mod tests {
             None,
         );
 
+        reset_fetch_calls_count();
         let result = matcher
             .evaluate_all_feature_flags(
                 FeatureFlagList {
@@ -553,9 +1267,17 @@ mod tests {
                 None,
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
+        let fetch_calls = get_fetch_calls_count();
+        assert_eq!(
+            fetch_calls,
+            0,
+            "Expected fetch_and_locally_cache_all_relevant_properties to be called exactly 0 times, but it was called {} times", 
+            fetch_calls
+        );
         let legacy_response = LegacyFlagsResponse::from_response(result);
         assert!(!legacy_response.errors_while_computing_flags);
         assert_eq!(
@@ -693,7 +1415,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -1095,7 +1817,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -1325,7 +2047,7 @@ mod tests {
             );
 
             matcher
-                .prepare_flag_evaluation_state(&[flag.clone()])
+                .prepare_flag_evaluation_state(&[&flag])
                 .await
                 .unwrap();
 
@@ -1457,17 +2179,17 @@ mod tests {
         );
 
         matcher_test_id
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
         matcher_example_id
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
         matcher_another_id
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -1570,7 +2292,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -1698,17 +2420,17 @@ mod tests {
         );
 
         matcher_test_id
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
         matcher_example_id
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
         matcher_another_id
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -1822,7 +2544,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -1915,7 +2637,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -2122,7 +2844,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -2203,7 +2925,7 @@ mod tests {
             None,
         );
 
-        let matcher = FeatureFlagMatcher::new(
+        let mut matcher = FeatureFlagMatcher::new(
             "test_user".to_string(),
             team.id,
             team.project_id,
@@ -2213,6 +2935,11 @@ mod tests {
             None,
             None,
         );
+
+        matcher
+            .prepare_flag_evaluation_state(&[&flag])
+            .await
+            .unwrap();
 
         let result = matcher.get_match(&flag, None, None).unwrap();
 
@@ -2301,7 +3028,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -2466,7 +3193,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -2648,6 +3375,7 @@ mod tests {
             None,
             Some("hash_key_continuity".to_string()),
             Uuid::new_v4(),
+            None,
         )
         .await;
 
@@ -2727,7 +3455,7 @@ mod tests {
             Some(group_type_mapping_cache),
             None,
         )
-        .evaluate_all_feature_flags(flags, None, None, None, Uuid::new_v4())
+        .evaluate_all_feature_flags(flags, None, None, None, Uuid::new_v4(), None)
         .await;
 
         assert!(result.flags.get("flag_continuity_missing").unwrap().enabled);
@@ -2855,6 +3583,7 @@ mod tests {
             None,
             Some("hash_key_mixed".to_string()),
             Uuid::new_v4(),
+            None,
         )
         .await;
 
@@ -2953,7 +3682,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3008,7 +3737,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag_invalid_override.clone()])
+            .prepare_flag_evaluation_state(&[&flag_invalid_override])
             .await
             .unwrap();
 
@@ -3181,7 +3910,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag_with_holdout.clone()])
+            .prepare_flag_evaluation_state(&[&flag_with_holdout])
             .await
             .unwrap();
 
@@ -3204,9 +3933,9 @@ mod tests {
 
         matcher2
             .prepare_flag_evaluation_state(&[
-                flag_with_holdout.clone(),
-                flag_without_holdout.clone(),
-                other_flag_with_holdout.clone(),
+                &flag_with_holdout,
+                &flag_without_holdout,
+                &other_flag_with_holdout,
             ])
             .await
             .unwrap();
@@ -3294,7 +4023,7 @@ mod tests {
             },
             deleted: false,
             active: true,
-            ensure_experience_continuity: false,
+            ensure_experience_continuity: Some(false),
             version: Some(1),
         };
 
@@ -3447,7 +4176,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3518,6 +4247,7 @@ mod tests {
                 None,
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -3574,7 +4304,7 @@ mod tests {
         );
 
         matcher_numeric
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3594,7 +4324,7 @@ mod tests {
         );
 
         matcher_string
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3626,7 +4356,7 @@ mod tests {
         );
 
         matcher_float
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3647,7 +4377,7 @@ mod tests {
         );
 
         matcher_bool
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3788,7 +4518,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3813,7 +4543,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3838,7 +4568,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -3905,7 +4635,7 @@ mod tests {
         );
 
         matcher
-            .prepare_flag_evaluation_state(&[flag.clone()])
+            .prepare_flag_evaluation_state(&[&flag])
             .await
             .unwrap();
 
@@ -4024,6 +4754,7 @@ mod tests {
         let flags = FeatureFlagList {
             flags: vec![flag.clone()],
         };
+        reset_fetch_calls_count();
 
         let result = matcher
             .evaluate_all_feature_flags(
@@ -4032,9 +4763,17 @@ mod tests {
                 None,
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
+        let fetch_calls = get_fetch_calls_count();
+        assert_eq!(
+            fetch_calls,
+            1,
+            "Expected fetch_and_locally_cache_all_relevant_properties to be called exactly 1 time, but it was called {} times", 
+            fetch_calls
+        );
         assert!(!result.errors_while_computing_flags);
         // The flag should evaluate using DB properties for condition 1 (which has focus="all-of-the-above")
         // and overrides for condition 2 (which won't match the email).
@@ -4065,6 +4804,7 @@ mod tests {
                 None,
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -4098,6 +4838,7 @@ mod tests {
                 None,
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -4133,6 +4874,7 @@ mod tests {
                 None,
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -4274,6 +5016,7 @@ mod tests {
                 Some(partial_group_overrides),
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -4313,6 +5056,7 @@ mod tests {
                 Some(complete_group_overrides_match),
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -4352,6 +5096,7 @@ mod tests {
                 Some(complete_group_overrides_no_match),
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -4387,6 +5132,7 @@ mod tests {
                 Some(complete_group_overrides_condition1),
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 
@@ -4426,6 +5172,7 @@ mod tests {
                 Some(mixed_group_overrides),
                 None,
                 Uuid::new_v4(),
+                None,
             )
             .await;
 

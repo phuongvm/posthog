@@ -32,7 +32,6 @@ from posthog.permissions import (
     APIScopePermission,
     OrganizationAdminWritePermissions,
     TimeSensitiveActionPermission,
-    OrganizationInviteSettingsPermission,
     OrganizationMemberPermissions,
     extract_organization,
 )
@@ -120,6 +119,7 @@ class OrganizationSerializer(
             "customer_id",
             "enforce_2fa",
             "members_can_invite",
+            "members_can_use_personal_api_keys",
             "member_count",
             "is_ai_data_processing_approved",
             "default_experiment_stats_method",
@@ -214,8 +214,8 @@ class OrganizationViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
                 for permission in [permissions.IsAuthenticated, TimeSensitiveActionPermission, APIScopePermission]
             ]
 
-            if "members_can_invite" in self.request.data:
-                create_permissions.append(OrganizationInviteSettingsPermission())
+            if any(key in self.request.data for key in ["members_can_invite", "members_can_use_personal_api_keys"]):
+                create_permissions.append(OrganizationAdminWritePermissions())
 
             if not is_cloud():
                 create_permissions.append(PremiumMultiorganizationPermission())
@@ -287,8 +287,8 @@ class OrganizationViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
 
             # Add capture event for 2FA enforcement change
             posthoganalytics.capture(
-                str(user.distinct_id),
                 "organization 2fa enforcement toggled",
+                distinct_id=str(user.distinct_id),
                 properties={
                     "enabled": enforce_2fa_value,
                     "organization_id": str(organization.id),
@@ -378,8 +378,8 @@ class OrganizationViewSet(TeamAndOrgViewSetMixin, viewsets.ModelViewSet):
         add_organization_to_rollback_list(organization.id)
 
         posthoganalytics.capture(
-            str(user.distinct_id),
             "organization environments rollback started",
+            distinct_id=str(user.distinct_id),
             properties={
                 "environment_mappings": json.dumps(environment_mappings),
                 "organization_id": str(organization.id),

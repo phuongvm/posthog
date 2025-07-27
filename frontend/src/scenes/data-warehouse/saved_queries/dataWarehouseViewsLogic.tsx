@@ -36,6 +36,22 @@ export const dataWarehouseViewsLogic = kea<dataWarehouseViewsLogicType>([
                 updateDataWarehouseSavedQueryFailure: () => false,
             },
         ],
+        startingMaterialization: [
+            false,
+            {
+                setStartingMaterialization: (_, { starting }) => starting,
+                loadDataModelingJobsSuccess: (state, { dataModelingJobs }) => {
+                    const currentJobStatus = dataModelingJobs?.results?.[0]?.status
+                    if (
+                        currentJobStatus &&
+                        ['Running', 'Completed', 'Failed', 'Cancelled'].includes(currentJobStatus)
+                    ) {
+                        return false
+                    }
+                    return state
+                },
+            },
+        ],
     }),
     actions({
         runDataWarehouseSavedQuery: (viewId: string) => ({ viewId }),
@@ -43,6 +59,7 @@ export const dataWarehouseViewsLogic = kea<dataWarehouseViewsLogicType>([
         revertMaterialization: (viewId: string) => ({ viewId }),
         loadOlderDataModelingJobs: () => {},
         resetDataModelingJobs: () => {},
+        setStartingMaterialization: (starting: boolean) => ({ starting }),
     }),
     loaders(({ values }) => ({
         dataWarehouseSavedQueries: [
@@ -193,6 +210,18 @@ export const dataWarehouseViewsLogic = kea<dataWarehouseViewsLogicType>([
                 return (
                     dataWarehouseSavedQueries?.reduce((acc, cur) => {
                         acc[cur.id] = cur
+                        return acc
+                    }, {} as Record<string, DataWarehouseSavedQuery>) ?? {}
+                )
+            },
+        ],
+        // id hyphens are removed. Used for hex'd id paths in DAG
+        dataWarehouseSavedQueryMapByIdStringMap: [
+            (s) => [s.dataWarehouseSavedQueries],
+            (dataWarehouseSavedQueries) => {
+                return (
+                    dataWarehouseSavedQueries?.reduce((acc, cur) => {
+                        acc[cur.id.replace(/-/g, '')] = cur
                         return acc
                     }, {} as Record<string, DataWarehouseSavedQuery>) ?? {}
                 )

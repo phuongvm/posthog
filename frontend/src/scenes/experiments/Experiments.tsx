@@ -1,6 +1,7 @@
 import { LemonDialog, LemonInput, LemonSelect, LemonTag, Tooltip } from '@posthog/lemon-ui'
 import { useActions, useValues } from 'kea'
 import { router } from 'kea-router'
+import { ActivityLog } from 'lib/components/ActivityLog/ActivityLog'
 import { ExperimentsHog } from 'lib/components/hedgehogs'
 import { MemberSelect } from 'lib/components/MemberSelect'
 import { PageHeader } from 'lib/components/PageHeader'
@@ -18,11 +19,13 @@ import { Link } from 'lib/lemon-ui/Link'
 import { featureFlagLogic } from 'lib/logic/featureFlagLogic'
 import { deleteWithUndo } from 'lib/utils/deleteWithUndo'
 import stringWithWBR from 'lib/utils/stringWithWBR'
+import { useState } from 'react'
 import { SceneExport } from 'scenes/sceneTypes'
 import { urls } from 'scenes/urls'
 
-import { Experiment, ExperimentsTabs, ProductKey, ProgressStatus } from '~/types'
+import { ActivityScope, Experiment, ExperimentsTabs, ProductKey, ProgressStatus } from '~/types'
 
+import { DuplicateExperimentModal } from './DuplicateExperimentModal'
 import { EXPERIMENTS_PER_PAGE, experimentsLogic, getExperimentStatus } from './experimentsLogic'
 import { StatusTag } from './ExperimentView/components'
 import { Holdouts } from './Holdouts'
@@ -35,21 +38,13 @@ export const scene: SceneExport = {
 }
 
 export function Experiments(): JSX.Element {
-    const {
-        currentProjectId,
-        experiments,
-        experimentsLoading,
-        tab,
-        shouldShowEmptyState,
-        showLegacyBadge,
-        filters,
-        count,
-        pagination,
-    } = useValues(experimentsLogic)
+    const { currentProjectId, experiments, experimentsLoading, tab, shouldShowEmptyState, filters, count, pagination } =
+        useValues(experimentsLogic)
     const { loadExperiments, setExperimentsTab, archiveExperiment, setExperimentsFilters } =
         useActions(experimentsLogic)
 
     const { featureFlags } = useValues(featureFlagLogic)
+    const [duplicateModalExperiment, setDuplicateModalExperiment] = useState<Experiment | null>(null)
 
     const flagResult = featureFlags[FEATURE_FLAGS.EXPERIMENTS_NEW_QUERY_RUNNER_AA_TEST]
 
@@ -82,7 +77,7 @@ export function Experiments(): JSX.Element {
                         title={
                             <>
                                 {stringWithWBR(experiment.name, 17)}
-                                {showLegacyBadge && isLegacyExperiment(experiment) && (
+                                {isLegacyExperiment(experiment) && (
                                     <Tooltip
                                         title="This experiment uses the legacy engine, so some features and improvements may be missing."
                                         docLink="https://posthog.com/docs/experiments/new-experimentation-engine"
@@ -121,7 +116,7 @@ export function Experiments(): JSX.Element {
             title: 'Status',
             key: 'status',
             render: function Render(_, experiment: Experiment) {
-                return <StatusTag experiment={experiment} />
+                return <StatusTag status={getExperimentStatus(experiment)} />
             },
             align: 'center',
             sorter: (a, b) => {
@@ -147,7 +142,7 @@ export function Experiments(): JSX.Element {
                                     View
                                 </LemonButton>
                                 <LemonButton
-                                    to={urls.experiment(`${experiment.id}`, 'duplicate')}
+                                    onClick={() => setDuplicateModalExperiment(experiment)}
                                     size="small"
                                     fullWidth
                                 >
@@ -266,6 +261,7 @@ export function Experiments(): JSX.Element {
                     { key: ExperimentsTabs.Archived, label: 'Archived experiments' },
                     { key: ExperimentsTabs.Holdouts, label: 'Holdout groups' },
                     { key: ExperimentsTabs.SharedMetrics, label: 'Shared metrics' },
+                    { key: ExperimentsTabs.History, label: 'History' },
                 ]}
             />
 
@@ -273,6 +269,8 @@ export function Experiments(): JSX.Element {
                 <Holdouts />
             ) : tab === ExperimentsTabs.SharedMetrics ? (
                 <SharedMetrics />
+            ) : tab === ExperimentsTabs.History ? (
+                <ActivityLog scope={ActivityScope.EXPERIMENT} />
             ) : (
                 <>
                     {tab === ExperimentsTabs.Archived ? (
@@ -384,6 +382,13 @@ export function Experiments(): JSX.Element {
                         </>
                     )}
                 </>
+            )}
+            {duplicateModalExperiment && (
+                <DuplicateExperimentModal
+                    isOpen={true}
+                    onClose={() => setDuplicateModalExperiment(null)}
+                    experiment={duplicateModalExperiment}
+                />
             )}
         </div>
     )

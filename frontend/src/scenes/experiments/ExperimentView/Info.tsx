@@ -1,6 +1,5 @@
 import { IconGear, IconPencil, IconRefresh, IconWarning } from '@posthog/icons'
-import { LemonButton, Link, ProfilePicture, Tooltip } from '@posthog/lemon-ui'
-import { LemonModal } from '@posthog/lemon-ui'
+import { LemonButton, LemonModal, Link, ProfilePicture, Tooltip } from '@posthog/lemon-ui'
 import clsx from 'clsx'
 import { useActions, useValues } from 'kea'
 import { CopyToClipboardInline } from 'lib/components/CopyToClipboard'
@@ -16,16 +15,19 @@ import { ExperimentStatsMethod, ProgressStatus } from '~/types'
 import { CONCLUSION_DISPLAY_CONFIG } from '../constants'
 import { experimentLogic } from '../experimentLogic'
 import { getExperimentStatus } from '../experimentsLogic'
+import { modalsLogic } from '../modalsLogic'
 import { StatusTag } from './components'
 import { ExperimentDates } from './ExperimentDates'
 import { StatsMethodModal } from './StatsMethodModal'
-import { modalsLogic } from '../modalsLogic'
 
 export function Info(): JSX.Element {
     const {
         experiment,
         featureFlags,
         legacyPrimaryMetricsResults,
+        legacySecondaryMetricsResults,
+        primaryMetricsResults,
+        secondaryMetricsResults,
         primaryMetricsResultsLoading,
         secondaryMetricsResultsLoading,
         statsMethod,
@@ -49,7 +51,15 @@ export function Info(): JSX.Element {
         return <></>
     }
 
-    const lastRefresh = legacyPrimaryMetricsResults?.[0]?.last_refresh
+    // Get the last refresh timestamp from either legacy or new results format
+    // Check both primary and secondary metrics for the most recent timestamp
+    const lastRefresh =
+        legacyPrimaryMetricsResults?.[0]?.last_refresh ||
+        legacySecondaryMetricsResults?.[0]?.last_refresh ||
+        primaryMetricsResults?.[0]?.last_refresh ||
+        secondaryMetricsResults?.[0]?.last_refresh
+
+    const status = getExperimentStatus(experiment)
 
     return (
         <div>
@@ -57,26 +67,25 @@ export function Info(): JSX.Element {
                 <div className="inline-flex deprecated-space-x-8">
                     <div className="block" data-attr="experiment-status">
                         <div className="text-xs font-semibold uppercase tracking-wide">Status</div>
-                        <StatusTag experiment={experiment} />
+                        <StatusTag status={status} />
                     </div>
                     {experiment.feature_flag && (
                         <div className="block">
                             <div className="text-xs font-semibold uppercase tracking-wide">
                                 <span>Feature flag</span>
                             </div>
-                            {getExperimentStatus(experiment) === ProgressStatus.Running &&
-                                !experiment.feature_flag.active && (
-                                    <Tooltip
-                                        placement="bottom"
-                                        title="Your experiment is running, but the linked flag is disabled. No data is being collected."
-                                    >
-                                        <IconWarning
-                                            style={{ transform: 'translateY(2px)' }}
-                                            className="mr-1 text-danger"
-                                            fontSize="18px"
-                                        />
-                                    </Tooltip>
-                                )}
+                            {status === ProgressStatus.Running && !experiment.feature_flag.active && (
+                                <Tooltip
+                                    placement="bottom"
+                                    title="Your experiment is running, but the linked flag is disabled. No data is being collected."
+                                >
+                                    <IconWarning
+                                        style={{ transform: 'translateY(2px)' }}
+                                        className="mr-1 text-danger"
+                                        fontSize="18px"
+                                    />
+                                </Tooltip>
+                            )}
                             <CopyToClipboardInline
                                 iconStyle={{ color: 'var(--lemon-button-icon-opacity)' }}
                                 className="font-normal text-sm"
@@ -206,7 +215,7 @@ export function Info(): JSX.Element {
                                 className="w-full"
                                 value={tempDescription}
                                 onChange={(value) => setTempDescription(value)}
-                                placeholder="Add your hypothesis for this test (optional)"
+                                placeholder="Add your hypothesis for this test"
                                 minRows={6}
                                 maxLength={400}
                             />

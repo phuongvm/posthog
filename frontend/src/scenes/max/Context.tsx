@@ -8,9 +8,16 @@ import React from 'react'
 
 import { maxContextLogic } from './maxContextLogic'
 import { MaxActionContext, MaxDashboardContext, MaxEventContext, MaxInsightContext } from './maxTypes'
+import clsx from 'clsx'
 
 function pluralize(count: number, word: string): string {
     return `${count} ${word}${count > 1 ? 's' : ''}`
+}
+
+interface ContextTagItem {
+    type: string
+    name: string
+    icon: React.ReactElement
 }
 
 interface ContextSummaryProps {
@@ -74,11 +81,7 @@ export function ContextSummary({
     }, [contextCounts])
 
     const allItems = useMemo(() => {
-        const items = []
-
-        if (useCurrentPageContext) {
-            items.push({ type: 'current-page', name: 'Current page', icon: <IconPageChart /> })
-        }
+        const items: ContextTagItem[] = []
 
         if (dashboards) {
             dashboards.forEach((dashboard) => {
@@ -121,7 +124,7 @@ export function ContextSummary({
         }
 
         return items
-    }, [useCurrentPageContext, dashboards, insights, events, actions])
+    }, [dashboards, insights, events, actions])
 
     if (totalCount === 0) {
         return null
@@ -148,108 +151,72 @@ export function ContextSummary({
     )
 }
 
-export function ContextTags(): JSX.Element | null {
-    const { contextInsights, contextDashboards, contextEvents, contextActions, useCurrentPageContext } =
-        useValues(maxContextLogic)
-    const {
-        removeContextInsight,
-        removeContextDashboard,
-        removeContextEvent,
-        removeContextAction,
-        disableCurrentPageContext,
-    } = useActions(maxContextLogic)
+export function ContextTags({ size = 'default' }: { size?: 'small' | 'default' }): JSX.Element | null {
+    const { contextInsights, contextDashboards, contextEvents, contextActions } = useValues(maxContextLogic)
+    const { removeContextInsight, removeContextDashboard, removeContextEvent, removeContextAction } =
+        useActions(maxContextLogic)
 
     const allTags = useMemo(() => {
         const tags: JSX.Element[] = []
 
-        // Current page context
-        if (useCurrentPageContext) {
-            tags.push(
-                <LemonTag
-                    key="current-page"
-                    icon={<IconPageChart />}
-                    onClose={disableCurrentPageContext}
-                    closable
-                    closeOnClick
-                >
-                    Current page
-                </LemonTag>
-            )
-        }
+        // Context items configuration
+        const contextConfigs = [
+            {
+                items: contextDashboards,
+                type: 'dashboard',
+                icon: IconDashboard,
+                removeAction: removeContextDashboard,
+                getName: (item: MaxDashboardContext) => item.name || `Dashboard ${item.id}`,
+            },
+            {
+                items: contextInsights,
+                type: 'insight',
+                icon: IconGraph,
+                removeAction: removeContextInsight,
+                getName: (item: MaxInsightContext) => item.name || `Insight ${item.id}`,
+            },
+            {
+                items: contextEvents,
+                type: 'event',
+                icon: IconEvent,
+                removeAction: removeContextEvent,
+                getName: (item: MaxEventContext) => item.name,
+            },
+            {
+                items: contextActions,
+                type: 'action',
+                icon: IconAction,
+                removeAction: removeContextAction,
+                getName: (item: MaxActionContext) => item.name || `Action ${item.id}`,
+            },
+        ]
 
-        // Dashboards
-        if (contextDashboards) {
-            contextDashboards.forEach((dashboard: MaxDashboardContext) => {
-                const name = dashboard.name || `Dashboard ${dashboard.id}`
-                tags.push(
-                    <LemonTag
-                        key={`dashboard-${dashboard.id}`}
-                        icon={<IconDashboard />}
-                        onClose={() => removeContextDashboard(dashboard.id)}
-                        closable
-                        closeOnClick
-                    >
-                        {name}
-                    </LemonTag>
-                )
-            })
-        }
-
-        // Insights
-        if (contextInsights) {
-            contextInsights.forEach((insight: MaxInsightContext) => {
-                const name = insight.name || `Insight ${insight.id}`
-                tags.push(
-                    <LemonTag
-                        key={`insight-${insight.id}`}
-                        icon={<IconGraph />}
-                        onClose={() => removeContextInsight(insight.id)}
-                        closable
-                        closeOnClick
-                    >
-                        {name}
-                    </LemonTag>
-                )
-            })
-        }
-
-        // Events
-        if (contextEvents) {
-            contextEvents.forEach((event: MaxEventContext) => {
-                tags.push(
-                    <LemonTag
-                        key={`event-${event.id}`}
-                        icon={<IconEvent />}
-                        onClose={() => removeContextEvent(event.id)}
-                        closable
-                        closeOnClick
-                    >
-                        {event.name}
-                    </LemonTag>
-                )
-            })
-        }
-
-        // Actions
-        if (contextActions) {
-            contextActions.forEach((action: MaxActionContext) => {
-                tags.push(
-                    <LemonTag
-                        key={`action-${action.id}`}
-                        icon={<IconAction />}
-                        onClose={() => removeContextAction(action.id)}
-                        closable
-                        closeOnClick
-                    >
-                        {action.name || `Action ${action.id}`}
-                    </LemonTag>
-                )
-            })
-        }
+        // Generate tags for each context type
+        contextConfigs.forEach(({ items, type, icon: IconComponent, removeAction, getName }) => {
+            if (items) {
+                items.forEach((item: any) => {
+                    const name = getName(item)
+                    tags.push(
+                        <Tooltip key={`${type}-${item.id}`} title={name}>
+                            <LemonTag
+                                key={`${type}-${item.id}`}
+                                icon={<IconComponent className="flex-shrink-0" />}
+                                onClose={() => removeAction(item.id)}
+                                closable
+                                closeOnClick
+                                className={clsx('flex items-center', size === 'small' ? 'max-w-20' : 'max-w-48')}
+                            >
+                                <span className="truncate min-w-0 flex-1">{name}</span>
+                            </LemonTag>
+                        </Tooltip>
+                    )
+                })
+            }
+        })
 
         return tags
     }, [
-        useCurrentPageContext,
+        size,
         contextDashboards,
         contextInsights,
         contextEvents,
@@ -258,36 +225,37 @@ export function ContextTags(): JSX.Element | null {
         removeContextInsight,
         removeContextEvent,
         removeContextAction,
-        disableCurrentPageContext,
     ])
 
     if (allTags.length === 0) {
         return null
     }
 
-    return <div className="flex flex-wrap gap-1 flex-1 min-w-0">{allTags}</div>
+    return <div className="flex flex-wrap gap-1 flex-1 min-w-0 overflow-hidden">{allTags}</div>
 }
 
-export function ContextDisplay(): JSX.Element {
+export function ContextDisplay({ size = 'default' }: { size?: 'small' | 'default' }): JSX.Element {
     const { hasData, contextOptions, taxonomicGroupTypes, mainTaxonomicGroupType } = useValues(maxContextLogic)
     const { handleTaxonomicFilterChange } = useActions(maxContextLogic)
 
     return (
         <div className="px-1 pt-1 w-full">
             <div className="flex flex-wrap items-start gap-1 w-full">
-                <TaxonomicPopover
-                    size="xxsmall"
-                    type="tertiary"
-                    className="flex-shrink-0 border"
-                    groupType={mainTaxonomicGroupType}
-                    groupTypes={taxonomicGroupTypes}
-                    onChange={handleTaxonomicFilterChange}
-                    icon={<IconAtSign />}
-                    placeholder={!hasData ? 'Add context' : null}
-                    maxContextOptions={contextOptions}
-                    width={450}
-                />
-                <ContextTags />
+                <Tooltip title="Add context to help Max answer your question">
+                    <TaxonomicPopover
+                        size="xxsmall"
+                        type="tertiary"
+                        className="flex-shrink-0 border"
+                        groupType={mainTaxonomicGroupType}
+                        groupTypes={taxonomicGroupTypes}
+                        onChange={handleTaxonomicFilterChange}
+                        icon={<IconAtSign />}
+                        placeholder={!hasData ? 'Add context' : null}
+                        maxContextOptions={contextOptions}
+                        width={450}
+                    />
+                </Tooltip>
+                <ContextTags size={size} />
             </div>
         </div>
     )

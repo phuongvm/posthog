@@ -3,6 +3,7 @@ import dns from 'dns/promises'
 import * as ipaddr from 'ipaddr.js'
 import net from 'node:net'
 import { Counter } from 'prom-client'
+// eslint-disable-next-line no-restricted-imports
 import {
     type HeadersInit,
     Agent,
@@ -13,6 +14,7 @@ import {
     RequestInit,
     Response,
 } from 'undici'
+// eslint-disable-next-line no-restricted-imports
 export { Response } from 'undici'
 import { URL } from 'url'
 
@@ -124,7 +126,7 @@ async function staticLookupAsync(hostname: string): Promise<LookupAddress> {
         // Check if the IPv4 address is global
         if (!allowUnsafe && !isGlobalIPv4(parsed)) {
             unsafeRequestCounter.inc({ reason: 'internal_hostname' })
-            throw new SecureRequestError('Internal hostname')
+            throw new SecureRequestError('Hostname is not allowed')
         }
     }
     if (addrinfo.length === 0) {

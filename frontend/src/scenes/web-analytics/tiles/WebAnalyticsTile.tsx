@@ -51,6 +51,8 @@ import { ErrorTrackingButton } from '../CrossSellButtons/ErrorTrackingButton'
 import { HeatmapButton } from '../CrossSellButtons/HeatmapButton'
 import { ReplayButton } from '../CrossSellButtons/ReplayButton'
 import { pageReportsLogic } from '../pageReportsLogic'
+import { MarketingAnalyticsTable } from '../tabs/marketing-analytics/frontend/components/MarketingAnalyticsTable/MarketingAnalyticsTable'
+import { marketingAnalyticsLogic } from '../tabs/marketing-analytics/frontend/logic/marketingAnalyticsLogic'
 
 export const toUtcOffsetFormat = (value: number): string => {
     if (value === 0) {
@@ -489,6 +491,28 @@ export const WebStatsTrendTile = ({
     )
 }
 
+export const MarketingAnalyticsTrendTile = ({
+    query,
+    showIntervalTile,
+}: QueryWithInsightProps<InsightVizNode> & { showIntervalTile?: boolean }): JSX.Element => {
+    const { setInterval } = useActions(marketingAnalyticsLogic)
+    const { dateFilter } = useValues(marketingAnalyticsLogic)
+
+    return (
+        <div className="border rounded bg-surface-primary flex-1 flex flex-col">
+            {showIntervalTile && (
+                <div className="flex flex-row items-center justify-end m-2 mr-4">
+                    <div className="flex flex-row items-center">
+                        <span className="mr-2">Group by</span>
+                        <IntervalFilterStandalone interval={dateFilter.interval} onIntervalChange={setInterval} />
+                    </div>
+                </div>
+            )}
+            <Query query={query} readOnly={true} />
+        </div>
+    )
+}
+
 export const WebStatsTableTile = ({
     query,
     breakdownBy,
@@ -760,12 +784,24 @@ export const WebQuery = ({
         return <WebExternalClicksTile query={adjustedQuery} insightProps={insightProps} />
     }
 
-    if (query.kind === NodeKind.InsightVizNode) {
+    if (query.kind === NodeKind.InsightVizNode && tileId === TileId.MARKETING) {
+        return (
+            <MarketingAnalyticsTrendTile
+                query={query}
+                showIntervalTile={showIntervalSelect}
+                insightProps={insightProps}
+            />
+        )
+    } else if (query.kind === NodeKind.InsightVizNode) {
         return <WebStatsTrendTile query={query} showIntervalTile={showIntervalSelect} insightProps={insightProps} />
     }
 
     if (query.kind === NodeKind.DataTableNode && query.source.kind === NodeKind.WebGoalsQuery) {
         return <WebGoalsTile query={query} insightProps={insightProps} />
+    }
+
+    if (query.kind === NodeKind.DataTableNode && query.source.kind === NodeKind.MarketingAnalyticsTableQuery) {
+        return <MarketingAnalyticsTable query={query} insightProps={insightProps} />
     }
 
     if (query.kind === NodeKind.WebVitalsPathBreakdownQuery) {

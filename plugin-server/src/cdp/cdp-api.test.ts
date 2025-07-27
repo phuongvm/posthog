@@ -14,13 +14,15 @@ import { createHogFunction, insertHogFunction as _insertHogFunction } from './_t
 import { CdpApi } from './cdp-api'
 import { posthogFilterOutPlugin } from './legacy-plugins/_transformations/posthog-filter-out-plugin/template'
 import { HogFunctionInvocationGlobals, HogFunctionType } from './types'
+import { setupExpressApp } from '~/router'
 
 describe('CDP API', () => {
     let hub: Hub
     let team: Team
-    let app: express.Express
+    let app: express.Application
     let api: CdpApi
     let hogFunction: HogFunctionType
+    let hogFunctionMultiFetch: HogFunctionType
 
     const globals: Partial<HogFunctionInvocationGlobals> = {
         groups: {},
@@ -54,19 +56,26 @@ describe('CDP API', () => {
 
     beforeEach(async () => {
         await resetTestDatabase()
-        hub = await createHub()
+        hub = await createHub({
+            SITE_URL: 'http://localhost:8000',
+        })
         hub.CDP_GOOGLE_ADWORDS_DEVELOPER_TOKEN = 'ADWORDS_TOKEN'
         team = await getFirstTeam(hub)
 
         api = new CdpApi(hub)
-        app = express()
-        app.use(express.json())
+        app = setupExpressApp()
         app.use('/', api.router())
 
         mockFetch.mockClear()
 
         hogFunction = await insertHogFunction({
             ...HOG_EXAMPLES.simple_fetch,
+            ...HOG_INPUTS_EXAMPLES.simple_fetch,
+            ...HOG_FILTERS_EXAMPLES.no_filters,
+        })
+
+        hogFunctionMultiFetch = await insertHogFunction({
+            ...HOG_EXAMPLES.recursive_fetch,
             ...HOG_INPUTS_EXAMPLES.simple_fetch,
             ...HOG_FILTERS_EXAMPLES.no_filters,
         })
@@ -114,41 +123,45 @@ describe('CDP API', () => {
             .send({ globals, mock_async_functions: true })
 
         expect(res.status).toEqual(200)
-
-        expect(res.body).toMatchObject({
-            errors: [],
-            logs: [
-                {
-                    level: 'debug',
-                    message: 'Executing function',
+        expect(res.body.errors).toEqual([])
+        expect(res.body.logs.map((log: any) => log.message).slice(0, -1)).toMatchInlineSnapshot(`
+            [
+              "Async function 'fetch' was mocked with arguments:",
+              "fetch('https://example.com/posthog-webhook', {
+              "headers": {
+                "version": "v=1.0.0"
+              },
+              "body": {
+                "event": {
+                  "uuid": "b3a1fe86-b10c-43cc-acaf-d208977608d0",
+                  "event": "$pageview",
+                  "elements_chain": "",
+                  "distinct_id": "123",
+                  "timestamp": "2021-09-28T14:00:00Z",
+                  "url": "https://example.com/events/b3a1fe86-b10c-43cc-acaf-d208977608d0/2021-09-28T14:00:00Z",
+                  "properties": {
+                    "$lib_version": "1.0.0"
+                  }
                 },
-                {
-                    level: 'debug',
-                    message:
-                        "Suspending function due to async function call 'fetch'. Payload: 2110 bytes. Event: b3a1fe86-b10c-43cc-acaf-d208977608d0",
+                "groups": {},
+                "nested": {
+                  "foo": "https://example.com/events/b3a1fe86-b10c-43cc-acaf-d208977608d0/2021-09-28T14:00:00Z"
                 },
-                {
-                    level: 'info',
-                    message: "Async function 'fetch' was mocked with arguments:",
+                "person": {
+                  "id": "123",
+                  "name": "Jane Doe",
+                  "url": "https://example.com/person/123",
+                  "properties": {
+                    "email": "example@posthog.com"
+                  }
                 },
-                {
-                    level: 'info',
-                    message: expect.stringContaining("fetch('"),
-                },
-                {
-                    level: 'debug',
-                    message: 'Resuming function',
-                },
-                {
-                    level: 'info',
-                    message: 'Fetch response:, {"status":200,"body":{}}',
-                },
-                {
-                    level: 'debug',
-                    message: expect.stringContaining('Function completed in '),
-                },
-            ],
-        })
+                "event_url": "https://example.com/events/b3a1fe86-b10c-43cc-acaf-d208977608d0/2021-09-28T14:00:00Z-test"
+              },
+              "method": "POST"
+            })",
+              "Fetch response:, {"status":200,"body":{}}",
+            ]
+        `)
     })
 
     it('can invoke a function via the API with real fetch', async () => {
@@ -170,25 +183,44 @@ describe('CDP API', () => {
             errors: [],
             logs: [
                 {
-                    level: 'debug',
-                    message: 'Executing function',
-                },
-                {
-                    level: 'debug',
-                    message:
-                        "Suspending function due to async function call 'fetch'. Payload: 2110 bytes. Event: b3a1fe86-b10c-43cc-acaf-d208977608d0",
-                },
-                {
-                    level: 'debug',
-                    message: 'Resuming function',
-                },
-                {
                     level: 'info',
                     message: 'Fetch response:, {"status":201,"body":{"real":true}}',
                 },
                 {
                     level: 'debug',
                     message: expect.stringContaining('Function completed in'),
+                },
+            ],
+        })
+    })
+
+    it('can invoke a function with multiple fetches', async () => {
+        mockFetch.mockImplementation(() =>
+            Promise.resolve({
+                status: 201,
+                headers: { 'Content-Type': 'application/json' },
+                json: () => Promise.resolve({ real: true }),
+                text: () => Promise.resolve(JSON.stringify({ real: true })),
+            })
+        )
+        const res = await supertest(app)
+            .post(
+                `/api/projects/${hogFunctionMultiFetch.team_id}/hog_functions/${hogFunctionMultiFetch.id}/invocations`
+            )
+            .send({ globals, mock_async_functions: false })
+
+        expect(res.body.errors).toMatchInlineSnapshot(`
+            [
+              "Exceeded maximum number of async steps: 5",
+            ]
+        `)
+
+        expect(mockFetch).toHaveBeenCalledTimes(5)
+        expect(res.body).toMatchObject({
+            logs: [
+                {
+                    level: 'error',
+                    message: expect.stringContaining('Error executing function'),
                 },
             ],
         })
@@ -227,19 +259,6 @@ describe('CDP API', () => {
         expect(res.body).toMatchObject({
             logs: [
                 {
-                    level: 'debug',
-                    message: 'Executing function',
-                },
-                {
-                    level: 'debug',
-                    message:
-                        "Suspending function due to async function call 'fetch'. Payload: 2108 bytes. Event: b3a1fe86-b10c-43cc-acaf-d208977608d0",
-                },
-                {
-                    level: 'debug',
-                    message: 'Resuming function',
-                },
-                {
                     level: 'info',
                     message: 'Fetch response:, {"status":201,"body":{"real":true}}',
                 },
@@ -266,25 +285,12 @@ describe('CDP API', () => {
         expect(res.body).toMatchObject({
             logs: [
                 {
-                    level: 'debug',
-                    message: 'Executing function',
-                },
-                {
-                    level: 'debug',
-                    message:
-                        "Suspending function due to async function call 'fetch'. Payload: 2108 bytes. Event: b3a1fe86-b10c-43cc-acaf-d208977608d0",
-                },
-                {
                     level: 'info',
                     message: "Async function 'fetch' was mocked with arguments:",
                 },
                 {
                     level: 'info',
                     message: expect.not.stringContaining('developer-token'),
-                },
-                {
-                    level: 'debug',
-                    message: 'Resuming function',
                 },
                 {
                     level: 'info',
@@ -337,12 +343,6 @@ describe('CDP API', () => {
                 message:
                     'Error filtering event b3a1fe86-b10c-43cc-acaf-d208977608d0: Invalid HogQL bytecode, stack is empty, can not pop',
             },
-            { level: 'debug', message: 'Executing function' },
-            {
-                level: 'debug',
-                message:
-                    "Suspending function due to async function call 'fetch'. Payload: 2110 bytes. Event: b3a1fe86-b10c-43cc-acaf-d208977608d0",
-            },
             {
                 level: 'info',
                 message: "Async function 'fetch' was mocked with arguments:",
@@ -351,7 +351,6 @@ describe('CDP API', () => {
                 level: 'info',
                 message: expect.stringContaining("fetch('"),
             },
-            { level: 'debug', message: 'Resuming function' },
             {
                 level: 'info',
                 message: 'Fetch response:, {"status":200,"body":{}}',
@@ -375,39 +374,45 @@ describe('CDP API', () => {
             .send({ globals, mock_async_functions: true })
 
         expect(res.status).toEqual(200)
-        expect(res.body).toMatchObject({
-            logs: [
-                {
-                    level: 'debug',
-                    message: 'Executing function',
+
+        expect(res.body.logs.map((log: any) => log.message).slice(0, -1)).toMatchInlineSnapshot(`
+            [
+              "Async function 'fetch' was mocked with arguments:",
+              "fetch('https://googleads.googleapis.com/', {
+              "headers": {
+                "version": "v=1.0.0"
+              },
+              "body": {
+                "event": {
+                  "uuid": "b3a1fe86-b10c-43cc-acaf-d208977608d0",
+                  "event": "$pageview",
+                  "elements_chain": "",
+                  "distinct_id": "123",
+                  "timestamp": "2021-09-28T14:00:00Z",
+                  "url": "https://example.com/events/b3a1fe86-b10c-43cc-acaf-d208977608d0/2021-09-28T14:00:00Z",
+                  "properties": {
+                    "$lib_version": "1.0.0"
+                  }
                 },
-                {
-                    level: 'debug',
-                    message:
-                        "Suspending function due to async function call 'fetch'. Payload: 2108 bytes. Event: b3a1fe86-b10c-43cc-acaf-d208977608d0",
+                "groups": {},
+                "nested": {
+                  "foo": "https://example.com/events/b3a1fe86-b10c-43cc-acaf-d208977608d0/2021-09-28T14:00:00Z"
                 },
-                {
-                    level: 'info',
-                    message: "Async function 'fetch' was mocked with arguments:",
+                "person": {
+                  "id": "123",
+                  "name": "Jane Doe",
+                  "url": "https://example.com/person/123",
+                  "properties": {
+                    "email": "example@posthog.com"
+                  }
                 },
-                {
-                    level: 'info',
-                    message: expect.not.stringContaining('developer-token'),
-                },
-                {
-                    level: 'debug',
-                    message: 'Resuming function',
-                },
-                {
-                    level: 'info',
-                    message: 'Fetch response:, {"status":200,"body":{}}',
-                },
-                {
-                    level: 'debug',
-                    message: expect.stringContaining('Function completed in '),
-                },
-            ],
-        })
+                "event_url": "https://example.com/events/b3a1fe86-b10c-43cc-acaf-d208977608d0/2021-09-28T14:00:00Z-test"
+              },
+              "method": "POST"
+            })",
+              "Fetch response:, {"status":200,"body":{}}",
+            ]
+        `)
     })
 
     describe('transformations', () => {
@@ -469,9 +474,7 @@ describe('CDP API', () => {
                 .send({ globals, mock_async_functions: true, configuration })
 
             expect(res.status).toEqual(200)
-
             expect(res.body.logs.map((log: any) => log.message)).toMatchInlineSnapshot(`[]`)
-
             expect(res.body.result).toMatchInlineSnapshot(`null`)
         })
     })

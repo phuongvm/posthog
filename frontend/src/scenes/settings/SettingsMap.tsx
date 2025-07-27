@@ -44,6 +44,7 @@ import { IPAllowListInfo } from './environment/IPAllowListInfo'
 import { IPCapture } from './environment/IPCapture'
 import { ManagedReverseProxy } from './environment/ManagedReverseProxy'
 import { OtherIntegrations } from './environment/OtherIntegrations'
+import { INTEGRATION_KINDS } from '~/types'
 import { PathCleaningFiltersConfig } from './environment/PathCleaningFiltersConfig'
 import { PersonDisplayNameProperties } from './environment/PersonDisplayNameProperties'
 import {
@@ -66,7 +67,6 @@ import {
     WebSnippet,
 } from './environment/TeamSettings'
 import { ProjectAccountFiltersSetting } from './environment/TestAccountFiltersConfig'
-import { UserGroups } from './environment/UserGroups'
 import { WebhookIntegration } from './environment/WebhookIntegration'
 import { Invites } from './organization/Invites'
 import { Members } from './organization/Members'
@@ -90,6 +90,7 @@ import { TwoFactorSettings } from './user/TwoFactorSettings'
 import { UpdateEmailPreferences } from './user/UpdateEmailPreferences'
 import { UserDangerZone } from './user/UserDangerZone'
 import { UserDetails } from './user/UserDetails'
+import { FeaturePreviewsSettings } from './environment/FeaturePreviewsSettings'
 
 export const SETTINGS_MAP: SettingSection[] = [
     // ENVIRONMENT
@@ -245,6 +246,7 @@ export const SETTINGS_MAP: SettingSection[] = [
         level: 'environment',
         id: 'environment-revenue-analytics',
         title: 'Revenue analytics',
+        flag: 'REVENUE_ANALYTICS',
         settings: [
             {
                 id: 'revenue-base-currency',
@@ -260,7 +262,6 @@ export const SETTINGS_MAP: SettingSection[] = [
                 id: 'revenue-analytics-goals',
                 title: 'Revenue goals',
                 component: <GoalsConfiguration />,
-                flag: 'REVENUE_ANALYTICS',
             },
             {
                 id: 'revenue-analytics-events',
@@ -271,7 +272,6 @@ export const SETTINGS_MAP: SettingSection[] = [
                 id: 'revenue-analytics-external-data-sources',
                 title: 'External data sources',
                 component: <ExternalDataSourceConfiguration />,
-                flag: 'REVENUE_ANALYTICS',
             },
         ],
     },
@@ -345,25 +345,25 @@ export const SETTINGS_MAP: SettingSection[] = [
                 component: <ReplayGeneral />,
             },
             {
-                id: 'replay-network',
-                title: 'Network capture',
-                component: <NetworkCaptureSettings />,
+                id: 'replay-triggers',
+                title: 'Recording conditions',
+                component: <ReplayTriggers />,
             },
             {
                 id: 'replay-masking',
-                title: 'Masking',
+                title: 'Privacy and masking',
                 component: <ReplayMaskingSettings />,
+            },
+            {
+                id: 'replay-network',
+                title: 'Network capture',
+                component: <NetworkCaptureSettings />,
             },
             {
                 id: 'replay-authorized-domains',
                 title: 'Authorized domains for replay',
                 component: <ReplayAuthorizedDomains />,
                 allowForTeam: (t) => !!t?.recording_domains?.length,
-            },
-            {
-                id: 'replay-triggers',
-                title: 'Replay triggers',
-                component: <ReplayTriggers />,
             },
             {
                 id: 'replay-ai-config',
@@ -408,13 +408,6 @@ export const SETTINGS_MAP: SettingSection[] = [
                 component: <ExceptionAutocaptureSettings />,
             },
             {
-                id: 'error-tracking-user-groups',
-                title: 'User groups',
-                description: 'Allow collections of users to be assigned to issues',
-                component: <UserGroups />,
-                flag: 'USER_GROUPS_ENABLED',
-            },
-            {
                 id: 'error-tracking-alerting',
                 title: 'Alerting',
                 component: <ErrorTrackingAlerting />,
@@ -423,7 +416,6 @@ export const SETTINGS_MAP: SettingSection[] = [
                 id: 'error-tracking-auto-assignment',
                 title: 'Auto assignment rules',
                 component: <ErrorTrackingAutoAssignment />,
-                flag: 'ERROR_TRACKING_ALERT_ROUTING',
             },
             {
                 id: 'error-tracking-custom-grouping',
@@ -503,7 +495,11 @@ export const SETTINGS_MAP: SettingSection[] = [
             {
                 id: 'integration-other',
                 title: 'Other integrations',
-                component: <OtherIntegrations />,
+                component: (
+                    <OtherIntegrations
+                        integrationKinds={INTEGRATION_KINDS.filter((kind) => !['slack', 'linear'].includes(kind))}
+                    />
+                ),
             },
             {
                 id: 'integration-ip-allowlist',
@@ -748,6 +744,18 @@ export const SETTINGS_MAP: SettingSection[] = [
                 id: 'personal-api-keys',
                 title: 'Personal API keys',
                 component: <PersonalAPIKeys />,
+            },
+        ],
+    },
+    {
+        level: 'user',
+        id: 'user-feature-previews',
+        title: 'Feature previews',
+        settings: [
+            {
+                id: 'feature-previews',
+                title: 'Feature previews',
+                component: <FeaturePreviewsSettings />,
             },
         ],
     },

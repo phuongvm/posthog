@@ -2,15 +2,18 @@ import { IconInfo } from '@posthog/icons'
 import { Tooltip } from '@posthog/lemon-ui'
 import { useValues } from 'kea'
 import { IconAreaChart } from 'lib/lemon-ui/icons'
+import { useFeatureFlag } from 'lib/hooks/useFeatureFlag'
 
 import { ExperimentMetric, NewExperimentQueryResponse } from '~/queries/schema/schema-general'
 
+import { EXPERIMENT_MAX_PRIMARY_METRICS, EXPERIMENT_MAX_SECONDARY_METRICS } from 'scenes/experiments/constants'
 import { experimentLogic } from '../../experimentLogic'
 import { AddPrimaryMetric, AddSecondaryMetric } from '../shared/AddMetric'
-import { MAX_PRIMARY_METRICS } from '../shared/const'
+import { type ExperimentVariantResult, getVariantInterval } from '../shared/utils'
 import { ConfidenceIntervalAxis } from './ConfidenceIntervalAxis'
 import { MetricRow } from './MetricRow'
 import { ResultDetails } from './ResultDetails'
+import { MetricsTable } from './MetricsTable'
 
 export function Metrics({ isSecondary }: { isSecondary?: boolean }): JSX.Element {
     const {
@@ -23,6 +26,8 @@ export function Metrics({ isSecondary }: { isSecondary?: boolean }): JSX.Element
         hasMinimumExposureForResults,
     } = useValues(experimentLogic)
 
+    const useNewMetricsTable = useFeatureFlag('EXPERIMENTS_NEW_METRICS_TABLE')
+
     const variants = experiment?.feature_flag?.filters?.multivariate?.variants
     if (!variants) {
         return <></>
@@ -31,7 +36,9 @@ export function Metrics({ isSecondary }: { isSecondary?: boolean }): JSX.Element
     const results = isSecondary ? secondaryMetricsResults : primaryMetricsResults
     const errors = isSecondary ? secondaryMetricsResultsErrors : primaryMetricsResultsErrors
 
-    let metrics = isSecondary ? experiment.metrics_secondary : experiment.metrics
+    // we know this will be new metric format only, thus the casting
+    let metrics = (isSecondary ? experiment.metrics_secondary : experiment.metrics) as ExperimentMetric[]
+
     const sharedMetrics = experiment.saved_metrics
         .filter((sharedMetric) => sharedMetric.metadata.type === (isSecondary ? 'secondary' : 'primary'))
         .map((sharedMetric) => ({
@@ -39,22 +46,24 @@ export function Metrics({ isSecondary }: { isSecondary?: boolean }): JSX.Element
             name: sharedMetric.name,
             sharedMetricId: sharedMetric.saved_metric,
             isSharedMetric: true,
-        }))
+        })) as ExperimentMetric[]
 
     if (sharedMetrics) {
         metrics = [...metrics, ...sharedMetrics]
     }
 
-    // Calculate shared chartRadius across all metrics
-    const maxAbsValue = Math.max(
-        ...results.flatMap((result: NewExperimentQueryResponse) => {
-            const variantResults = result?.variant_results || []
-            return variantResults.flatMap((variant: any) => {
-                const interval = variant.confidence_interval
-                return interval ? [Math.abs(interval[0]), Math.abs(interval[1])] : []
-            })
-        })
-    )
+    // Calculate shared chartRadius across all metrics (only needed for old metrics table)
+    const maxAbsValue = useNewMetricsTable
+        ? 0
+        : Math.max(
+              ...results.flatMap((result: NewExperimentQueryResponse) => {
+                  const variantResults = result?.variant_results || []
+                  return variantResults.flatMap((variant: ExperimentVariantResult) => {
+                      const interval = getVariantInterval(variant)
+                      return interval ? [Math.abs(interval[0]), Math.abs(interval[1])] : []
+                  })
+              })
+          )
 
     const axisMargin = Math.max(maxAbsValue * 0.05, 0.1)
     const chartRadius = maxAbsValue + axisMargin
@@ -93,43 +102,78 @@ export function Metrics({ isSecondary }: { isSecondary?: boolean }): JSX.Element
             </div>
             {metrics.length > 0 ? (
                 <>
-                    <div className="w-full overflow-x-auto">
-                        <div className="min-w-[1000px]">
-                            <div className="rounded bg-[var(--bg-table)]">
-                                <ConfidenceIntervalAxis chartRadius={chartRadius} />
-                                {metrics.map((metric, metricIndex) => {
-                                    const result = results[metricIndex]
+                    {useNewMetricsTable ? (
+                        <>
+                            <MetricsTable
+                                metrics={metrics}
+                                results={results}
+                                errors={errors}
+                                isSecondary={!!isSecondary}
+                                getInsightType={getInsightType}
+                            />
+                            {metrics.length === 1 &&
+                                results[0] &&
+                                hasMinimumExposureForResults &&
+                                !isSecondary &&
+                                !useNewMetricsTable && (
+                                    <div className="mt-4">
+                                        <ResultDetails
+                                            metric={metrics[0] as ExperimentMetric}
+                                            result={{
+                                                ...results[0],
+                                                metric: metrics[0] as ExperimentMetric,
+                                            }}
+                                            experiment={experiment}
+                                            metricIndex={0}
+                                            isSecondary={!!isSecondary}
+                                        />
+                                    </div>
+                                )}
+                        </>
+                    ) : (
+                        <div className="w-full overflow-x-auto">
+                            <div className="min-w-[1000px]">
+                                <div className="rounded bg-[var(--bg-table)]">
+                                    <ConfidenceIntervalAxis chartRadius={chartRadius} />
+                                    {metrics.map((metric, metricIndex) => {
+                                        const result = results[metricIndex]
 
-                                    return (
-                                        <div key={metricIndex}>
-                                            <MetricRow
-                                                metrics={metrics}
-                                                metricIndex={metricIndex}
-                                                result={results[metricIndex]}
-                                                metric={metric}
-                                                metricType={getInsightType(metric)}
-                                                isSecondary={!!isSecondary}
-                                                chartRadius={chartRadius}
-                                                error={errors[metricIndex]}
-                                            />
-                                            {metrics.length === 1 && result && hasMinimumExposureForResults && (
-                                                <div className="mt-2">
-                                                    <ResultDetails
-                                                        metric={metric as ExperimentMetric}
-                                                        result={{
-                                                            ...results[metricIndex],
-                                                            metric: metric as ExperimentMetric,
-                                                        }}
-                                                        experiment={experiment}
-                                                    />
-                                                </div>
-                                            )}
-                                        </div>
-                                    )
-                                })}
+                                        return (
+                                            <div key={metricIndex}>
+                                                <MetricRow
+                                                    metrics={metrics}
+                                                    metricIndex={metricIndex}
+                                                    result={results[metricIndex]}
+                                                    metric={metric}
+                                                    metricType={getInsightType(metric)}
+                                                    isSecondary={!!isSecondary}
+                                                    chartRadius={chartRadius}
+                                                    error={errors[metricIndex]}
+                                                />
+                                                {metrics.length === 1 &&
+                                                    result &&
+                                                    hasMinimumExposureForResults &&
+                                                    !isSecondary && (
+                                                        <div className="mt-2">
+                                                            <ResultDetails
+                                                                metric={metric as ExperimentMetric}
+                                                                result={{
+                                                                    ...results[metricIndex],
+                                                                    metric: metric as ExperimentMetric,
+                                                                }}
+                                                                experiment={experiment}
+                                                                metricIndex={metricIndex}
+                                                                isSecondary={!!isSecondary}
+                                                            />
+                                                        </div>
+                                                    )}
+                                            </div>
+                                        )
+                                    })}
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    )}
                 </>
             ) : (
                 <div className="border rounded bg-surface-primary pt-6 pb-8 text-secondary mt-2">
@@ -137,8 +181,9 @@ export function Metrics({ isSecondary }: { isSecondary?: boolean }): JSX.Element
                         <IconAreaChart fontSize="30" />
                         <div className="text-sm text-center text-balance max-w-sm">
                             <p>
-                                Add up to {MAX_PRIMARY_METRICS} <span>{isSecondary ? 'secondary' : 'primary'}</span>{' '}
-                                metrics.
+                                Add up to&nbsp;
+                                {isSecondary ? EXPERIMENT_MAX_SECONDARY_METRICS : EXPERIMENT_MAX_PRIMARY_METRICS}&nbsp;
+                                <span>{isSecondary ? 'secondary' : 'primary'}</span> metrics.
                             </p>
                             <p>
                                 {isSecondary

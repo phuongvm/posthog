@@ -2,11 +2,10 @@ import { useActions, useValues } from 'kea'
 import { useState } from 'react'
 import { experimentLogic } from 'scenes/experiments/experimentLogic'
 
-import { ExperimentFunnelsQuery } from '~/queries/schema/schema-general'
-import { ExperimentTrendsQuery } from '~/queries/schema/schema-general'
 import { ExperimentMetric } from '~/queries/schema/schema-general'
 import { InsightType } from '~/types'
 
+import { EXPERIMENT_MAX_PRIMARY_METRICS, EXPERIMENT_MAX_SECONDARY_METRICS } from 'scenes/experiments/constants'
 import { useSvgResizeObserver } from '../hooks/useSvgResizeObserver'
 import { ChartEmptyState } from '../shared/ChartEmptyState'
 import { ChartLoadingState } from '../shared/ChartLoadingState'
@@ -26,19 +25,32 @@ export function MetricRow({
     chartRadius,
     error,
 }: {
-    metrics: (ExperimentMetric | ExperimentTrendsQuery | ExperimentFunnelsQuery)[]
+    metrics: ExperimentMetric[]
     metricIndex: number
-    metric: ExperimentMetric | ExperimentTrendsQuery | ExperimentFunnelsQuery
+    metric: ExperimentMetric
     result: any
     metricType: InsightType
     isSecondary: boolean
     chartRadius: number
     error: any
 }): JSX.Element {
-    const { experiment, secondaryMetricsResultsLoading, primaryMetricsResultsLoading, hasMinimumExposureForResults } =
-        useValues(experimentLogic)
+    const {
+        experiment,
+        secondaryMetricsResultsLoading,
+        primaryMetricsResultsLoading,
+        hasMinimumExposureForResults,
+        primaryMetricsLengthWithSharedMetrics,
+        secondaryMetricsLengthWithSharedMetrics,
+    } = useValues(experimentLogic)
     const { duplicateMetric, updateExperimentMetrics } = useActions(experimentLogic)
     const resultsLoading = isSecondary ? secondaryMetricsResultsLoading : primaryMetricsResultsLoading
+
+    // Check if duplicating would exceed the metric limit
+    const currentMetricCount = isSecondary
+        ? secondaryMetricsLengthWithSharedMetrics
+        : primaryMetricsLengthWithSharedMetrics
+    const canDuplicateMetric =
+        currentMetricCount < (isSecondary ? EXPERIMENT_MAX_SECONDARY_METRICS : EXPERIMENT_MAX_PRIMARY_METRICS)
 
     const variantResults = result?.variant_results || []
 
@@ -65,6 +77,7 @@ export function MetricRow({
                             metric={metric}
                             metricType={metricType}
                             isPrimaryMetric={!isSecondary}
+                            canDuplicateMetric={canDuplicateMetric}
                             onDuplicateMetricClick={() => {
                                 duplicateMetric({ metricIndex, isSecondary })
                                 updateExperimentMetrics()
@@ -77,7 +90,9 @@ export function MetricRow({
                     // eslint-disable-next-line react/forbid-dom-props
                     style={{ height: `${panelHeight}px` }}
                 >
-                    {result && hasMinimumExposureForResults ? (
+                    {resultsLoading ? (
+                        <ChartLoadingState height={panelHeight} />
+                    ) : result && hasMinimumExposureForResults ? (
                         <div className="relative">
                             <Chart
                                 chartSvgRef={chartSvgRef}
@@ -87,22 +102,19 @@ export function MetricRow({
                                 tickValues={tickValues}
                                 isSecondary={isSecondary}
                             />
-                            <DetailsButton
-                                metric={metric}
-                                isSecondary={isSecondary}
-                                experiment={experiment}
-                                setIsModalOpen={setIsModalOpen}
-                            />
+                            <div className="absolute top-2 left-2 flex justify-center bg-[var(--bg-table)] z-[101]">
+                                <DetailsButton metric={metric} setIsModalOpen={setIsModalOpen} />
+                            </div>
                             <DetailsModal
                                 isOpen={isModalOpen}
                                 onClose={() => setIsModalOpen(false)}
                                 metric={metric}
                                 result={result}
                                 experiment={experiment}
+                                metricIndex={metricIndex}
+                                isSecondary={isSecondary}
                             />
                         </div>
-                    ) : resultsLoading ? (
-                        <ChartLoadingState height={panelHeight} />
                     ) : (
                         <ChartEmptyState
                             height={panelHeight}

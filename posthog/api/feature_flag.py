@@ -3,6 +3,7 @@ import re
 import time
 import logging
 from typing import Any, Optional, cast
+from posthog.date_util import thirty_days_ago
 from datetime import datetime
 from django.db import transaction
 from django.db.models import QuerySet, Q, deletion, Prefetch
@@ -439,10 +440,26 @@ class FeatureFlagSerializer(
 
         validated_data["last_modified_by"] = request.user
 
-        if "deleted" in validated_data and validated_data["deleted"] is True and instance.features.count() > 0:
-            raise exceptions.ValidationError(
-                "Cannot delete a feature flag that is in use with early access features. Please delete the early access feature before deleting the flag."
-            )
+        if "deleted" in validated_data and validated_data["deleted"] is True:
+            # Check for linked early access features
+            if instance.features.count() > 0:
+                raise exceptions.ValidationError(
+                    "Cannot delete a feature flag that is in use with early access features. Please delete the early access feature before deleting the flag."
+                )
+
+            # Check for linked active (non-deleted) experiments
+            active_experiments = instance.experiment_set.filter(deleted=False)
+            if active_experiments.exists():
+                experiment_ids = list(active_experiments.values_list("id", flat=True))
+                raise exceptions.ValidationError(
+                    f"Cannot delete a feature flag that is linked to active experiment(s) with ID(s): {', '.join(map(str, experiment_ids))}. Please delete the experiment(s) before deleting the flag."
+                )
+
+            # If all experiments are soft-deleted, rename the key to free it up
+            # Append ID to the key when soft-deleting to prevent key conflicts
+            # This allows the original key to be reused while preserving referential integrity for deleted experiments
+            if instance.experiment_set.filter(deleted=True).exists():
+                validated_data["key"] = f"{instance.key}:deleted:{instance.id}"
 
         # First apply all transformations to validated_data
         validated_key = validated_data.get("key", None)
@@ -467,12 +484,6 @@ class FeatureFlagSerializer(
             # select_for_update locks the database row so we ensure version updates are atomic
             locked_instance = FeatureFlag.objects.select_for_update().get(pk=instance.pk)
             locked_version = locked_instance.version or 0
-
-            if validated_key:
-                # Delete any soft deleted feature flags with the same key to prevent conflicts
-                FeatureFlag.objects.filter(
-                    key=validated_key, team__project_id=instance.team.project_id, deleted=True
-                ).delete()
 
             # NOW check for conflicts after all transformations
             if version != -1 and version != locked_version:
@@ -652,7 +663,7 @@ def _create_usage_dashboard(feature_flag: FeatureFlag, user):
         created_by=user,
         creation_mode="template",
     )
-    create_feature_flag_dashboard(feature_flag, usage_dashboard)
+    create_feature_flag_dashboard(feature_flag, usage_dashboard, user)
 
     feature_flag.usage_dashboard = usage_dashboard
     feature_flag.save()
@@ -714,7 +725,39 @@ class FeatureFlagViewSet(
 
         for key in filters:
             if key == "active":
-                queryset = queryset.filter(active=filters[key] == "true")
+                if filters[key] == "STALE":
+                    # Get flags that are at least 30 days old and active
+                    # This is an approximation - the serializer will compute the exact status
+                    queryset = queryset.filter(active=True, created_at__lt=thirty_days_ago()).extra(
+                        where=[
+                            """
+                            (
+                                (
+                                    EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(filters->'groups') AS elem
+                                        WHERE elem->>'rollout_percentage' = '100'
+                                        AND (elem->'properties')::text = '[]'::text
+                                    )
+                                    AND (filters->'multivariate' IS NULL OR jsonb_array_length(filters->'multivariate'->'variants') = 0)
+                                )
+                                OR
+                                (
+                                    EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(filters->'multivariate'->'variants') AS variant
+                                        WHERE variant->>'rollout_percentage' = '100'
+                                    )
+                                    AND EXISTS (
+                                        SELECT 1 FROM jsonb_array_elements(filters->'groups') AS elem
+                                        WHERE elem->>'rollout_percentage' = '100'
+                                        AND (elem->'properties')::text = '[]'::text
+                                    )
+                                )
+                            )
+                            """
+                        ]
+                    )
+                else:
+                    queryset = queryset.filter(active=filters[key] == "true")
             elif key == "created_by_id":
                 queryset = queryset.filter(created_by_id=request.GET["created_by_id"])
             elif key == "search":
@@ -787,7 +830,7 @@ class FeatureFlagViewSet(
                 OpenApiTypes.STR,
                 location=OpenApiParameter.QUERY,
                 required=False,
-                enum=["true", "false"],
+                enum=["true", "false", "STALE"],
             ),
             OpenApiParameter(
                 "created_by_id",
@@ -932,6 +975,56 @@ class FeatureFlagViewSet(
             }
             for feature_flag in all_serialized_flags
         )
+
+    @action(methods=["POST"], detail=False)
+    def bulk_keys(self, request: request.Request, **kwargs):
+        """
+        Get feature flag keys by IDs.
+        Accepts a list of feature flag IDs and returns a mapping of ID to key.
+        """
+        flag_ids = request.data.get("ids", [])
+
+        if not flag_ids:
+            return Response({"keys": {}})
+
+        # Convert to integers and track invalid IDs
+        validated_ids = []
+        invalid_ids = []
+        for flag_id in flag_ids:
+            if str(flag_id).isdigit():
+                try:
+                    validated_ids.append(int(flag_id))
+                except (ValueError, TypeError):
+                    invalid_ids.append(flag_id)
+            else:
+                invalid_ids.append(flag_id)
+
+        # If no valid IDs were provided, return error
+        if not validated_ids and flag_ids:
+            return Response({"error": "Invalid flag IDs provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not validated_ids:
+            return Response({"keys": {}})
+
+        flag_ids = validated_ids
+
+        # Prepare response data
+        response_data: dict[str, Any] = {"keys": {}}
+
+        # Add warning if there were invalid IDs
+        if invalid_ids:
+            response_data["warning"] = f"Invalid flag IDs ignored: {invalid_ids}"
+
+        # Fetch flags by IDs
+        flags = FeatureFlag.objects.filter(
+            id__in=flag_ids, team__project_id=self.project_id, deleted=False
+        ).values_list("id", "key")
+
+        # Create mapping of ID to key
+        keys_mapping = {str(flag_id): key for flag_id, key in flags}
+        response_data["keys"] = keys_mapping
+
+        return Response(response_data)
 
     @action(
         methods=["GET"],
@@ -1293,6 +1386,22 @@ class FeatureFlagViewSet(
 
 @receiver(model_activity_signal, sender=FeatureFlag)
 def handle_feature_flag_change(sender, scope, before_update, after_update, activity, was_impersonated=False, **kwargs):
+    # Extract scheduled change context if present
+    scheduled_change_context = getattr(after_update, "_scheduled_change_context", {})
+    scheduled_change_id = scheduled_change_context.get("scheduled_change_id")
+    is_scheduled_change = scheduled_change_id is not None
+
+    # Create trigger info for scheduled changes
+    trigger = None
+    if is_scheduled_change:
+        from posthog.models.activity_logging.activity_log import Trigger
+
+        trigger = Trigger(
+            job_type="scheduled_change",
+            job_id=str(scheduled_change_id),
+            payload={"scheduled_change_id": scheduled_change_id},
+        )
+
     log_activity(
         organization_id=after_update.team.organization_id,
         team_id=after_update.team_id,
@@ -1302,7 +1411,9 @@ def handle_feature_flag_change(sender, scope, before_update, after_update, activ
         scope=scope,
         activity=activity,
         detail=Detail(
-            changes=changes_between(scope, previous=before_update, current=after_update), name=after_update.key
+            changes=changes_between(scope, previous=before_update, current=after_update),
+            name=after_update.key,
+            trigger=trigger,
         ),
     )
 

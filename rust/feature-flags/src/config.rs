@@ -6,6 +6,7 @@ use std::num::ParseIntError;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use tracing::Level;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlexBool(pub bool);
@@ -158,7 +159,7 @@ pub struct Config {
     #[envconfig(from = "COOKIELESS_SALT_TTL_SECONDS", default = "86400")]
     pub cookieless_salt_ttl_seconds: u64,
 
-    #[envconfig(from = "NEW_ANALYTICS_CAPTURE_ENDPOINT", default = "")]
+    #[envconfig(from = "NEW_ANALYTICS_CAPTURE_ENDPOINT", default = "/i/v0/e/")]
     pub new_analytics_capture_endpoint: String,
 
     #[envconfig(from = "NEW_ANALYTICS_CAPTURE_EXCLUDED_TEAM_IDS", default = "none")]
@@ -175,6 +176,22 @@ pub struct Config {
 
     #[envconfig(from = "SESSION_REPLAY_RRWEB_SCRIPT_ALLOWED_TEAMS", default = "none")]
     pub session_replay_rrweb_script_allowed_teams: TeamIdCollection,
+
+    #[envconfig(from = "FLAGS_SESSION_REPLAY_QUOTA_CHECK", default = "false")]
+    pub flags_session_replay_quota_check: bool,
+
+    // OpenTelemetry configuration
+    #[envconfig(from = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    pub otel_url: Option<String>,
+
+    #[envconfig(from = "OTEL_TRACES_SAMPLER_ARG", default = "0.001")]
+    pub otel_sampling_rate: f64,
+
+    #[envconfig(from = "OTEL_SERVICE_NAME", default = "posthog-feature-flags")]
+    pub otel_service_name: String,
+
+    #[envconfig(from = "OTEL_LOG_LEVEL", default = "info")]
+    pub otel_log_level: Level,
 }
 
 impl Config {
@@ -199,12 +216,17 @@ impl Config {
             cookieless_force_stateless: false,
             cookieless_identifies_ttl_seconds: 7200,
             cookieless_salt_ttl_seconds: 86400,
-            new_analytics_capture_endpoint: "".to_string(),
+            new_analytics_capture_endpoint: "/i/v0/e/".to_string(),
             new_analytics_capture_excluded_team_ids: TeamIdCollection::None,
             element_chain_as_string_excluded_teams: TeamIdCollection::None,
             debug: FlexBool(false),
             session_replay_rrweb_script: "".to_string(),
             session_replay_rrweb_script_allowed_teams: TeamIdCollection::None,
+            flags_session_replay_quota_check: false,
+            otel_url: None,
+            otel_sampling_rate: 1.0,
+            otel_service_name: "posthog-feature-flags".to_string(),
+            otel_log_level: Level::ERROR,
         }
     }
 
@@ -290,6 +312,9 @@ mod tests {
             config.element_chain_as_string_excluded_teams,
             TeamIdCollection::None
         );
+        assert_eq!(config.new_analytics_capture_endpoint, "/i/v0/e/");
+        assert_eq!(config.debug, FlexBool(false));
+        assert!(!config.flags_session_replay_quota_check);
     }
 
     #[test]

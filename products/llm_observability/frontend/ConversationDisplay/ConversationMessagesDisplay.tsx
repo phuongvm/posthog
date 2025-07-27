@@ -33,7 +33,7 @@ export function ConversationMessagesDisplay({
     const outputNormalized = normalizeMessages(output, 'assistant')
 
     const outputDisplay = raisedError ? (
-        <div className="flex items-center gap-1.5 rounded border text-default p-2 font-medium bg-[var(--bg-fill-error-tertiary)] border-danger overflow-x-scroll">
+        <div className="flex items-center gap-1.5 rounded border text-default p-2 font-medium bg-[var(--bg-fill-error-tertiary)] border-danger overflow-x-auto">
             <IconExclamation className="text-base" />
             {isObject(output) ? (
                 <JSONViewer src={output} collapsed={4} />
@@ -104,7 +104,7 @@ export const LLMMessageDisplay = React.memo(
         const { role, content, ...additionalKwargs } = message
         const { isRenderingMarkdown } = useValues(llmObservabilityTraceLogic)
         const { toggleMarkdownRendering } = useActions(llmObservabilityTraceLogic)
-        const [show, setShow] = React.useState(role !== 'system' && role !== 'tool')
+        const [show, setShow] = React.useState(role !== 'system' && role !== 'tool' && role !== 'tools')
 
         // Compute whether the content looks like Markdown.
         // (Heuristic: looks for code blocks, blockquotes, headings, italic, bold, underline, strikethrough)
@@ -178,19 +178,19 @@ export const LLMMessageDisplay = React.memo(
                             return <LemonMarkdown className="whitespace-pre-wrap">{escapedContent}</LemonMarkdown>
                         } catch {
                             // If markdown still fails, fall back to plain text
-                            return <span className="font-mono text-xs whitespace-pre-wrap">{content}</span>
+                            return <span className="font-mono whitespace-pre-wrap">{content}</span>
                         }
                     } else {
                         // pre-wrap, because especially in system prompts, we want to preserve newlines even if they aren't fully Markdown-style
                         return <LemonMarkdown className="whitespace-pre-wrap">{content}</LemonMarkdown>
                     }
                 } else {
-                    return <span className="font-mono text-xs whitespace-pre-wrap">{content}</span>
+                    return <span className="font-mono whitespace-pre-wrap">{content}</span>
                 }
             }
 
             // Fallback: render as plain text.
-            return <span className="text-xs whitespace-pre-wrap">{content}</span>
+            return <span className="whitespace-pre-wrap">{content}</span>
         }
 
         return (
@@ -208,7 +208,7 @@ export const LLMMessageDisplay = React.memo(
             >
                 <div className="flex items-center gap-1 w-full px-2 h-6 text-xs font-medium">
                     <span className="grow">{role}</span>
-                    {content && (
+                    {(content || Object.keys(additionalKwargsEntries).length > 0) && (
                         <>
                             <LemonButton
                                 size="small"

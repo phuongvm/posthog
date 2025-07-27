@@ -1,4 +1,5 @@
 import {
+    Assignment,
     ClientMetrics,
     CODES,
     ConsumerGlobalConfig,
@@ -63,6 +64,13 @@ const histogramKafkaBatchSizeKb = new Histogram({
     name: 'consumer_batch_size_kb',
     help: 'The size in kb of the batches we are receiving from Kafka',
     buckets: [0, 128, 512, 1024, 5120, 10240, 20480, 51200, 102400, 204800, Infinity],
+})
+
+const histogramKafkaConsumeInterval = new Histogram({
+    name: 'kafka_consume_interval_ms',
+    help: 'Time elapsed between Kafka consume calls',
+    labelNames: ['topic', 'groupId'],
+    buckets: [0, 20, 100, 200, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, Infinity],
 })
 
 export const findOffsetsToCommit = (messages: TopicPartitionOffset[]): TopicPartitionOffset[] => {
@@ -150,6 +158,8 @@ export class KafkaConsumer {
             'queued.min.messages': 100000,
             'queued.max.messages.kbytes': 102400, // 1048576 is the default, we go smaller to reduce mem usage.
             'client.rack': defaultConfig.KAFKA_CLIENT_RACK, // Helps with cross-AZ traffic awareness and is not unique to the consumer
+            'metadata.max.age.ms': 30000, // Refresh metadata every 30s - Relevant for leader loss (MSK Security Patches)
+            'socket.timeout.ms': 30000,
             // Custom settings and overrides - this is where most configuration overrides should be done
             ...getKafkaConfigFromEnv('CONSUMER'),
             // Finally any specifically given consumer config overrides
@@ -166,29 +176,29 @@ export class KafkaConsumer {
         this.rdKafkaConsumer = this.createConsumer()
     }
 
-    public getConfig() {
+    public getConfig(): ConsumerGlobalConfig {
         return {
             ...this.consumerConfig,
         }
     }
 
-    public heartbeat() {
+    public heartbeat(): void {
         // Can be called externally to update the heartbeat time and keep the consumer alive
         this.lastHeartbeatTime = Date.now()
     }
 
-    public isHealthy() {
+    public isHealthy(): boolean {
         // this is called as a readiness and a liveness probe
         const isWithinInterval = Date.now() - this.lastHeartbeatTime < this.maxHealthHeartbeatIntervalMs
         const isConnected = this.rdKafkaConsumer.isConnected()
         return isConnected && isWithinInterval
     }
 
-    public assignments() {
+    public assignments(): Assignment[] {
         return this.rdKafkaConsumer.isConnected() ? this.rdKafkaConsumer.assignments() : []
     }
 
-    public offsetsStore(topicPartitionOffsets: TopicPartitionOffset[]) {
+    public offsetsStore(topicPartitionOffsets: TopicPartitionOffset[]): void {
         return this.rdKafkaConsumer.offsetsStore(topicPartitionOffsets)
     }
 
@@ -229,7 +239,7 @@ export class KafkaConsumer {
         return meta.topics.find((x) => x.name === topic)?.partitions ?? []
     }
 
-    private createConsumer() {
+    private createConsumer(): RdKafkaConsumer {
         const consumer = new RdKafkaConsumer(this.consumerConfig, {
             // Default settings
             'auto.offset.reset': 'earliest',
@@ -275,7 +285,13 @@ export class KafkaConsumer {
         })
 
         consumer.on('event.error', (error: LibrdKafkaError) => {
-            logger.error('📝', 'librdkafka error', { log: error })
+            logger.error('📝 librdkafka error', {
+                message: error.message,
+                code: error.code,
+                errno: error.errno,
+                origin: 'event.error',
+                stack: error.stack,
+            })
         })
 
         consumer.on('subscribed', (topics) => {
@@ -297,7 +313,7 @@ export class KafkaConsumer {
         return consumer
     }
 
-    private storeOffsetsForMessages = (messages: Message[]) => {
+    private storeOffsetsForMessages = (messages: Message[]): void => {
         const topicPartitionOffsets = findOffsetsToCommit(messages).map((message) => {
             return {
                 ...message,
@@ -323,7 +339,9 @@ export class KafkaConsumer {
         }
     }
 
-    public async connect(eachBatch: (messages: Message[]) => Promise<{ backgroundTask?: Promise<any> } | void>) {
+    public async connect(
+        eachBatch: (messages: Message[]) => Promise<{ backgroundTask?: Promise<any> } | void>
+    ): Promise<void> {
         const { topic, groupId, callEachBatchWhenEmpty = false } = this.config
 
         try {
@@ -349,18 +367,23 @@ export class KafkaConsumer {
         this.rdKafkaConsumer.setDefaultConsumeTimeout(this.config.batchTimeoutMs || DEFAULT_BATCH_TIMEOUT_MS)
         this.rdKafkaConsumer.subscribe([this.config.topic])
 
-        const startConsuming = async () => {
+        const startConsuming = async (): Promise<void> => {
+            let lastConsumeTime = 0
             try {
                 while (!this.isStopping) {
                     logger.debug('🔁', 'main_loop_consuming')
 
+                    const consumeStartTime = performance.now()
+                    if (lastConsumeTime > 0) {
+                        const intervalMs = consumeStartTime - lastConsumeTime
+                        histogramKafkaConsumeInterval.labels({ topic, groupId }).observe(intervalMs)
+                    }
+                    lastConsumeTime = consumeStartTime
                     // TRICKY: We wrap this in a retry check. It seems that despite being connected and ready, the client can still have an undeterministic
                     // error when consuming, hence the retryIfRetriable.
                     const messages = await retryIfRetriable(() =>
                         promisifyCallback<Message[]>((cb) => this.rdKafkaConsumer.consume(this.fetchBatchSize, cb))
                     )
-
-                    logger.debug('🔁', 'messages', { count: messages.length })
 
                     // After successfully pulling a batch, we can update our heartbeat time
                     this.heartbeat()
@@ -467,7 +490,7 @@ export class KafkaConsumer {
         })
     }
 
-    public async disconnect() {
+    public async disconnect(): Promise<void> {
         if (this.isStopping) {
             return
         }
@@ -488,7 +511,7 @@ export class KafkaConsumer {
         await this.disconnectConsumer()
     }
 
-    private async disconnectConsumer() {
+    private async disconnectConsumer(): Promise<void> {
         if (this.rdKafkaConsumer.isConnected()) {
             logger.info('📝', 'Disconnecting consumer...')
             await new Promise<void>((res, rej) => this.rdKafkaConsumer.disconnect((e) => (e ? rej(e) : res())))

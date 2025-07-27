@@ -1,4 +1,5 @@
 import inspect
+import math
 import re
 import resource
 import threading
@@ -105,6 +106,13 @@ from posthog.models.raw_sessions.sql import (
     RAW_SESSIONS_TABLE_MV_SQL,
     RAW_SESSIONS_CREATE_OR_REPLACE_VIEW_SQL,
     RAW_SESSIONS_TABLE_SQL,
+)
+from posthog.models.web_preaggregated.sql import (
+    WEB_BOUNCES_HOURLY_SQL,
+    WEB_STATS_HOURLY_SQL,
+    WEB_STATS_DAILY_SQL,
+    WEB_BOUNCES_DAILY_SQL,
+    WEB_STATS_COMBINED_VIEW_SQL,
 )
 from posthog.session_recordings.sql.session_recording_event_sql import (
     DISTRIBUTED_SESSION_RECORDING_EVENTS_TABLE_SQL,
@@ -531,17 +539,14 @@ class PostHogTestCase(SimpleTestCase):
 
     @contextmanager
     def retry_assertion(self, max_retries=5, delay=0.1) -> Generator[None, None, None]:
-        for _ in range(max_retries):
+        for attempt in range(max_retries):
             try:
-                yield
-                break  # If the assertion passed, break the loop
+                yield  # Only yield once per context manager instance
+                return  # If we get here, the assertions passed
             except AssertionError:
-                time.sleep(delay)  # If the assertion failed, wait before retrying
-        else:
-            # If we've exhausted all retries and the test is still failing, fail the test
-            # we want to raise the test assertion not some generic error, so run the assertion
-            # one last time
-            yield
+                if attempt == max_retries - 1:
+                    raise  # On last attempt, re-raise the assertion error
+                time.sleep(delay)  # Otherwise, wait before retrying
 
 
 class MemoryLeakTestMixin:
@@ -1150,6 +1155,10 @@ def reset_clickhouse_database() -> None:
             SESSION_REPLAY_EVENTS_TABLE_SQL(),
             SESSION_REPLAY_EVENTS_V2_TEST_DATA_TABLE_SQL(),
             CREATE_CUSTOM_METRICS_COUNTER_EVENTS_TABLE,
+            WEB_BOUNCES_DAILY_SQL(),
+            WEB_BOUNCES_HOURLY_SQL(),
+            WEB_STATS_DAILY_SQL(),
+            WEB_STATS_HOURLY_SQL(),
         ]
     )
     run_clickhouse_statement_in_parallel(
@@ -1178,6 +1187,7 @@ def reset_clickhouse_database() -> None:
             SESSIONS_VIEW_SQL(),
             ADHOC_EVENTS_DELETION_TABLE_SQL(),
             CUSTOM_METRICS_VIEW(include_counters=True),
+            WEB_STATS_COMBINED_VIEW_SQL(),
         ]
     )
 
@@ -1347,3 +1357,20 @@ def create_person_id_override_by_distinct_id(
         VALUES ({team_id}, '{distinct_id_from}', '{person_id_to}', {version})
     """
     )
+
+
+class NaNMatcher:
+    def __eq__(self, other):
+        try:
+            return math.isnan(other)
+        except (TypeError, ValueError):
+            return False
+
+    def __repr__(self):
+        return "<NaN>"
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+
+NaN = NaNMatcher()

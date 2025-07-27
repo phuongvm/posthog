@@ -203,6 +203,10 @@ export const sceneConfigurations: Record<Scene | string, SceneConfig> = {
         name: 'Groups',
         defaultDocsPath: '/docs/product-analytics/group-analytics',
     },
+    [Scene.GroupsNew]: {
+        projectBased: true,
+        defaultDocsPath: '/docs/product-analytics/group-analytics',
+    },
     [Scene.Group]: {
         projectBased: true,
         name: 'People & groups',
@@ -457,6 +461,13 @@ export const sceneConfigurations: Record<Scene | string, SceneConfig> = {
         organizationBased: true,
         layout: 'app-container',
     },
+    [Scene.OAuthAuthorize]: {
+        name: 'Authorize',
+        layout: 'plain',
+        projectBased: false,
+        organizationBased: false,
+        allowUnauthenticated: true,
+    },
     [Scene.HogFunction]: {
         projectBased: true,
         name: 'Hog function',
@@ -623,6 +634,7 @@ export const routes: Record<string, [Scene | string, string]> = {
     [urls.pipelineNode(':stage', ':id')]: [Scene.PipelineNode, 'pipelineNodeWithId'],
     [urls.customCss()]: [Scene.CustomCss, 'customCss'],
     [urls.groups(':groupTypeIndex')]: [Scene.PersonsManagement, 'groups'],
+    [urls.groupsNew(':groupTypeIndex')]: [Scene.GroupsNew, 'groupsNew'],
     [urls.group(':groupTypeIndex', ':groupKey', false)]: [Scene.Group, 'group'],
     [urls.group(':groupTypeIndex', ':groupKey', false, ':groupTab')]: [Scene.Group, 'groupWithTab'],
     [urls.cohort(':id')]: [Scene.Cohort, 'cohort'],
@@ -691,6 +703,7 @@ export const routes: Record<string, [Scene | string, string]> = {
     [urls.wizard()]: [Scene.Wizard, 'wizard'],
     [urls.startups()]: [Scene.StartupProgram, 'startupProgram'],
     [urls.startups(':referrer')]: [Scene.StartupProgram, 'startupProgramWithReferrer'],
+    [urls.oauthAuthorize()]: [Scene.OAuthAuthorize, 'oauthAuthorize'],
     [urls.dataPipelines(':kind')]: [Scene.DataPipelines, 'dataPipelines'],
     [urls.dataPipelinesNew(':kind')]: [Scene.DataPipelinesNew, 'dataPipelinesNew'],
     [urls.dataWarehouseSourceNew()]: [Scene.DataWarehouseSourceNew, 'dataWarehouseSourceNew'],

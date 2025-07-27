@@ -156,7 +156,7 @@ export class HedgehogActor {
         })
 
         this.setAnimation('stop', {})
-        this.direction = sampleOne(['left', 'right'])
+        this.direction = this.hedgehogConfig.fixed_direction || sampleOne(['left', 'right'])
         this.xVelocity = this.direction === 'left' ? -5 : 5
         this.jump()
     }
@@ -255,14 +255,18 @@ export class HedgehogActor {
                     this.setAnimation('walk')
                 }
 
-                this.direction = ['arrowleft', 'a'].includes(key) ? 'left' : 'right'
-                this.xVelocity = this.direction === 'left' ? -5 : 5
+                if (!this.hedgehogConfig.fixed_direction) {
+                    this.direction = ['arrowleft', 'a'].includes(key) ? 'left' : 'right'
+                    this.xVelocity = this.direction === 'left' ? -5 : 5
 
-                const moonwalk = e.shiftKey
-                if (moonwalk) {
-                    this.direction = this.direction === 'left' ? 'right' : 'left'
-                    // Moonwalking is hard so he moves slightly slower of course
-                    this.xVelocity *= 0.8
+                    const moonwalk = e.shiftKey
+                    if (moonwalk) {
+                        this.direction = this.direction === 'left' ? 'right' : 'left'
+                        // Moonwalking is hard so he moves slightly slower of course
+                        this.xVelocity *= 0.8
+                    }
+                } else {
+                    this.xVelocity = ['arrowleft', 'a'].includes(key) ? -5 : 5
                 }
             }
         }
@@ -346,7 +350,10 @@ export class HedgehogActor {
             (spriteInfo.maxIteration ? Math.max(1, Math.floor(Math.random() * spriteInfo.maxIteration)) : null)
 
         if (this.mainAnimation.name !== 'stop') {
-            this.direction = this.mainAnimation.spriteInfo.forceDirection || sampleOne(['left', 'right'])
+            this.direction =
+                this.hedgehogConfig.fixed_direction ||
+                this.mainAnimation.spriteInfo.forceDirection ||
+                sampleOne(['left', 'right'])
         }
 
         if (animationName === 'walk') {
@@ -512,7 +519,9 @@ export class HedgehogActor {
             this.x = 0
             if (!this.isControlledByUser) {
                 this.xVelocity = -this.xVelocity
-                this.direction = 'right'
+                if (!this.hedgehogConfig.fixed_direction) {
+                    this.direction = 'right'
+                }
             }
         }
 
@@ -520,7 +529,9 @@ export class HedgehogActor {
             this.x = window.innerWidth - SPRITE_SIZE
             if (!this.isControlledByUser) {
                 this.xVelocity = -this.xVelocity
-                this.direction = 'left'
+                if (!this.hedgehogConfig.fixed_direction) {
+                    this.direction = 'left'
+                }
             }
         }
     }
@@ -554,7 +565,9 @@ export class HedgehogActor {
                 this.yVelocity = -this.yVelocity * 0.4
             }
             this.x = this.x + this.xVelocity
-            this.direction = this.xVelocity > 0 ? 'right' : 'left'
+            if (!this.hedgehogConfig.fixed_direction) {
+                this.direction = this.xVelocity > 0 ? 'right' : 'left'
+            }
 
             return
         }
@@ -784,7 +797,7 @@ export class HedgehogActor {
                             ref?.(r)
                         }
                     }}
-                    className="m-0 cursor-pointer HedgehogBuddy"
+                    className="HedgehogBuddy"
                     data-content={preloadContent}
                     onTouchStart={this.static ? undefined : () => onTouchOrMouseStart()}
                     onMouseDown={this.static ? undefined : () => onTouchOrMouseStart()}
@@ -796,6 +809,7 @@ export class HedgehogActor {
                         position: this.static ? 'relative' : 'fixed',
                         left: this.static ? undefined : this.x,
                         bottom: this.static ? undefined : this.y - SHADOW_HEIGHT * 0.5,
+                        zIndex: !this.static ? 'var(--z-hedgehog-buddy)' : undefined,
                         transition: !(this.isDragging || this.followMouse) ? `all ${1000 / FPS}ms` : undefined,
                     }}
                 >
@@ -931,22 +945,25 @@ export const HedgehogBuddy = React.forwardRef<HTMLDivElement, HedgehogBuddyProps
         if (currentLocation.pathname.includes('/heatmaps')) {
             actor?.setOnFire()
         }
-    }, [currentLocation.pathname])
+    }, [currentLocation.pathname, actor])
 
     useEffect(() => {
         if (hedgehogConfig) {
             actor.hedgehogConfig = hedgehogConfig
             actor.setAnimation(hedgehogConfig.walking_enabled ? 'walk' : 'stop')
+            if (hedgehogConfig.fixed_direction) {
+                actor.direction = hedgehogConfig.fixed_direction
+            }
         }
-    }, [hedgehogConfig])
+    }, [hedgehogConfig, actor, actor.hedgehogConfig, actor.direction])
 
     useEffect(() => {
         actor.tooltip = tooltip
-    }, [tooltip])
+    }, [tooltip, actor.tooltip])
 
     useEffect(() => {
         actor.static = staticMode ?? false
-    }, [staticMode])
+    }, [staticMode, actor.static])
 
     useEffect(() => {
         let timer: any = null
@@ -961,7 +978,7 @@ export const HedgehogBuddy = React.forwardRef<HTMLDivElement, HedgehogBuddyProps
         return () => {
             clearTimeout(timer)
         }
-    }, [])
+    }, [actor])
 
     useEffect(() => {
         if (actor.isDragging) {
@@ -975,7 +992,7 @@ export const HedgehogBuddy = React.forwardRef<HTMLDivElement, HedgehogBuddyProps
 
     useEffect(() => {
         onPositionChange?.(actor)
-    }, [actor.x, actor.y, actor.direction])
+    }, [actor.x, actor.y, actor.direction, onPositionChange, actor])
 
     const onClick = (): void => {
         !actor.isDragging && _onClick?.(actor)

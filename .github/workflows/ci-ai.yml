@@ -1,6 +1,7 @@
 name: AI
 on:
     pull_request:
+        types: [opened, synchronize, reopened, labeled, unlabeled]
     push:
         branches:
             - master
@@ -29,6 +30,7 @@ jobs:
                   # Check out the actual branch instead of merge commit with master,
                   # because we want the Braintrust experiment to have accurate git metadata (on master it's empty)
                   ref: ${{ github.event.pull_request.head.ref }}
+                  fetch-depth: 0
 
             - name: Stop/Start stack with Docker Compose
               run: |
@@ -57,7 +59,7 @@ jobs:
               run: bin/check_kafka_clickhouse_up
 
             - name: Run LLM evals
-              run: pytest ee/hogai/eval
+              run: pytest ee/hogai/eval -vv
               env:
                   BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
                   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -98,9 +100,7 @@ jobs:
                                   if (result.comparison_experiment_name?.startsWith("master-")) {
                                       baselineComparison = `${diffHighlight}${value.diff > 0 ? "+" : value.diff < 0 ? "" : "±"}${(
                                           value.diff * 100
-                                      ).toFixed(2)}%${diffHighlight} versus [baseline (master)](${result.project_url}/experiments/${
-                                          result.comparison_experiment_name
-                                      }) (improvements: ${value.improvements}, regressions: ${value.regressions})`
+                                      ).toFixed(2)}%${diffHighlight} (improvements: ${value.improvements}, regressions: ${value.regressions})`
                                       diffEmoji = value.diff > 0.01 ? "🟢" : value.diff < -0.01 ? "🔴" : "🔵"
                                   }
                                   return `${diffEmoji} **${key}**: **${score}**${baselineComparison ? `, ${baselineComparison}` : ""}`
@@ -113,11 +113,16 @@ jobs:
                           const totalTokens = metrics.total_tokens ? `🔢 ${Math.floor(metrics.total_tokens.metric)} tokens` : null
                           const cost = metrics.estimated_cost ? `💵 $${metrics.estimated_cost.metric.toFixed(4)} in tokens` : null
                           const metricsText = [duration, totalTokens, cost].filter(Boolean).join(", ")
+                          const baselineLink = `[${result.comparison_experiment_name}](${result.project_url}/experiments/${result.comparison_experiment_name})`
 
                           // Create concise experiment summary with header only showing experiment name
                           const experimentName = result.project_name.replace(/^max-ai-/, "")
 
-                          return `### [${experimentName}](${result.experiment_url})\n\n${scoresList}\n\nAvg. case performance: ${metricsText}`
+                          return [
+                              `### [${experimentName}](${result.experiment_url})`,
+                              scoresList,
+                              `Baseline: ${baselineLink} • Avg. case performance: ${metricsText}`,
+                          ].join("\n\n")
                       })
 
                       const totalExperiments = evalResults.length
